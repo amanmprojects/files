@@ -242,6 +242,14 @@ pub struct App {
     waker: Option<Waker>,
     /// The window title last set (the current folder's name).
     pub title: String,
+    /// How far the file list is scrolled, worked out from where its rows are drawn.
+    pub scroll_y: f32,
+    /// Each tab's folders' scroll when left, to put back on Back, Forward, Up or a tab switch.
+    scroll_memory: HashMap<(String, Location), f32>,
+    /// The folder being entered should get its remembered scroll back.
+    restore_scroll: bool,
+    /// A scroll for the list to jump to on the next frame.
+    pub scroll_req: Option<f32>,
     pub side: Side,
     /// The selection's preview, once made, and its picture.
     pub preview: Option<Preview>,
@@ -330,6 +338,10 @@ impl App {
             theme_changed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             waker: None,
             title: String::new(),
+            scroll_y: 0.0,
+            scroll_memory: HashMap::new(),
+            restore_scroll: false,
+            scroll_req: None,
             side: Side::Preview,
             preview: None,
             preview_image: None,
@@ -387,34 +399,74 @@ impl App {
 
     // ---- Navigation ----------------------------------------------------------------------------
 
+    /// Opens a folder fresh: at the top, with history.
     pub fn go(&mut self, loc: Location) {
+        self.navigate(loc, false);
+    }
+
+    fn navigate(&mut self, loc: Location, restore: bool) {
         if loc == self.loc {
             return self.reload();
         }
+        self.remember_scroll();
         self.back.push(std::mem::replace(&mut self.loc, loc));
         self.forward.clear();
+        self.restore_scroll = restore;
         self.entered();
     }
 
     pub fn go_back(&mut self) {
         if let Some(loc) = self.back.pop() {
+            self.remember_scroll();
             self.forward.push(std::mem::replace(&mut self.loc, loc));
+            self.restore_scroll = true;
             self.entered();
         }
     }
 
     pub fn go_forward(&mut self) {
         if let Some(loc) = self.forward.pop() {
+            self.remember_scroll();
             self.back.push(std::mem::replace(&mut self.loc, loc));
+            self.restore_scroll = true;
             self.entered();
         }
     }
 
+    /// The enclosing folder, scrolled as it was left and with the folder we came from selected.
     pub fn go_up(&mut self) {
         if let Some(p) = self.loc.parent() {
             let child = self.loc.name();
-            self.go(p);
+            self.navigate(p, true);
             self.table.select(child);
+        }
+    }
+
+    // ---- Scroll memory -------------------------------------------------------------------------
+
+    fn remember_scroll(&mut self) {
+        if self.scroll_memory.len() > 500 {
+            self.scroll_memory.clear();
+        }
+        let key = (self.tabs[self.active].id.clone(), self.loc.clone());
+        self.scroll_memory.insert(key, self.scroll_y);
+    }
+
+    /// A row of the list was drawn at window `y` (row `i`; rows are `row_h` tall under a
+    /// `header_h` header at the top of the file area): how far the list is scrolled.
+    pub fn track_scroll(&mut self, i: usize, y: f32, header_h: f32, row_h: f32) {
+        let top = self.content_at[1] + header_h;
+        self.scroll_y = (i as f32 * row_h - (y - top)).max(0.0);
+    }
+
+    /// Asks for the remembered scroll of the folder shown, when it's being returned to.
+    fn request_scroll(&mut self) {
+        if self.restore_scroll
+            && let Some(y) = self.scroll_memory.get(&(self.tabs[self.active].id.clone(), self.loc.clone())).copied()
+            && y > 0.0
+            && !self.entries.is_empty()
+        {
+            self.scroll_req = Some(y);
         }
     }
 
@@ -436,10 +488,12 @@ impl App {
         {
             h.last = Some(path.clone());
         }
+        self.scroll_y = 0.0;
         // Seen recently: show it now; the listing below refreshes it.
         if let Some(cached) = self.listings.get(&self.loc) {
             self.entries = cached.clone();
             self.refilter();
+            self.request_scroll();
         }
         self.reload();
     }
@@ -534,6 +588,9 @@ impl App {
             }
         }
         self.refilter();
+        // Returning here: put the scroll back once the rows are in, then stop.
+        self.request_scroll();
+        self.restore_scroll = false;
     }
 
     /// Rebuilds `shown` from the entries, the hidden-files switch, the filter and the sort.
@@ -1615,6 +1672,7 @@ impl App {
 
     /// The showing tab's state, moved out of `App` (which keeps empty fields until `put_tab`).
     fn take_tab(&mut self) -> Tab {
+        self.remember_scroll();
         let filter = std::mem::replace(&mut self.filter, TextEdit::new(""));
         let mut t = Tab::new(self.loc.clone());
         t.id = self.tabs[self.active].id.clone();
@@ -1629,6 +1687,8 @@ impl App {
     }
 
     fn put_tab(&mut self, t: Tab) {
+        self.restore_scroll = true;
+        self.scroll_y = 0.0;
         self.loc = t.loc;
         self.back = t.back;
         self.forward = t.forward;

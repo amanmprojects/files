@@ -46,6 +46,9 @@ fn poll(s: &mut App, t: f64, tx: &mut Tx) -> bool {
     if let Some(key) = s.focus_req.take() {
         tx.focus(key, false);
     }
+    if let Some(y) = s.scroll_req.take() {
+        tx.scroll_to_instant("files/viewport", 0.0, y);
+    }
     // The window's title names the folder, as the taskbar and window switchers show it.
     let title = format!("{} — Files", s.loc.name());
     if title != s.title {

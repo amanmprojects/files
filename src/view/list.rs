@@ -88,7 +88,7 @@ pub fn content(s: &App, k: &Kit, avail: Option<f32>) -> El {
         .column(TableColumn::new("modified", "Modified").width(170.0).min(120.0).max(240.0).sortable())
         .column(TableColumn::new("size", "Size").width(90.0).min(64.0).max(160.0).align(Align::End).sortable())
         .column(TableColumn::new("kind", "Kind").width(120.0).min(80.0).max(220.0).sortable())
-        .cell(move |s: &App, i, col| cell(s, &kit, &s.entries[s.shown[i]], col))
+        .cell(move |s: &App, i, col| cell(s, &kit, i, &s.entries[s.shown[i]], col))
         .on_sort(|s: &mut App, col, dir, _| s.set_sort(col, dir))
         .on_open(|s: &mut App, id, _| {
             let id = id.to_owned();
@@ -107,7 +107,7 @@ pub fn content(s: &App, k: &Kit, avail: Option<f32>) -> El {
     }
 }
 
-fn cell(s: &App, k: &Kit, e: &Entry, col: &str) -> Cell {
+fn cell(s: &App, k: &Kit, i: usize, e: &Entry, col: &str) -> Cell {
     let cut = s.clip.as_ref().is_some_and(|c| c.mode == Mode::Move && c.dir == s.loc && c.names.contains(&e.name));
     let ink = if cut { k.c.text_faint } else { k.c.text_base };
     let content = match col {
@@ -138,6 +138,18 @@ fn cell(s: &App, k: &Kit, e: &Entry, col: &str) -> Cell {
                 None => row().child(t),
             }
         }
+    };
+    // The name cell reports where its row is drawn, which says how far the list is scrolled
+    // (for putting it back on Back). Bookkeeping only: nothing on screen changes.
+    let content = if col == "name" {
+        let style = rune_kit::TableStyle::from_kit(k);
+        let (header_h, row_h) = (style.header_height, style.row_height);
+        content.on_layout_tx(move |s: &mut App, r: [f32; 4], tx: &mut Tx| {
+            s.track_scroll(i, r[1], header_h, row_h);
+            tx.live_only();
+        })
+    } else {
+        content
     };
     let name = e.name.clone();
     // Rows sit inside the list's scroll view, which a sideways swipe never reaches past.

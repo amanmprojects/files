@@ -5,11 +5,13 @@
 
 mod app;
 mod archive;
+mod grid;
 mod icons;
 mod ipc;
 mod jobs;
 mod keys;
 mod local;
+mod mime;
 mod model;
 mod open;
 mod ops;
@@ -17,6 +19,7 @@ mod preview;
 mod ssh;
 mod term;
 mod theme;
+mod thumbs;
 mod view;
 
 #[cfg(test)]
@@ -48,6 +51,15 @@ fn poll(s: &mut App, t: f64, tx: &mut Tx) -> bool {
     }
     if let Some(y) = s.scroll_req.take() {
         tx.scroll_to_instant("files/viewport", 0.0, y);
+    }
+    if let Some(name) = s.reveal_req.take() {
+        let key = match s.view_mode {
+            app::ViewMode::List => Some(name),
+            app::ViewMode::Grid => s.grid_row_key(&name),
+        };
+        if let Some(k) = key {
+            tx.scroll_into_view_in("files", k);
+        }
     }
     // The window's title names the folder, as the taskbar and window switchers show it.
     let title = format!("{} — Files", s.loc.name());
@@ -81,6 +93,7 @@ static SCENES: &[Scene] = &[
     ("preview", |s| s.toggle_side(app::Side::Preview)),
     ("connect", |s| s.open_connect_dialog("", None)),
     ("hidden", |s| s.toggle_hidden()),
+    ("grid", |s| s.set_view(app::ViewMode::Grid)),
 ];
 
 fn main() {

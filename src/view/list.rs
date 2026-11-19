@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use rune::{Align, El, Icon, PointerPress, Tx, col, row, text};
 use rune_kit::{Button, ButtonVariant, Cell, Kit, Menu, MenuItem, Table, TableColumn, glyphs};
 
-use crate::app::{App, MenuFor};
+use crate::app::{App, GRID_SIZE_NAMES, MenuFor, ViewMode};
 use crate::icons;
 use crate::model::{Entry, Kind, extension, format_time, human_size, kind_label, mode_string};
 use crate::ops::Mode;
@@ -30,9 +30,10 @@ pub fn file_icon(e: &Entry) -> &'static Icon {
     }
 }
 
-/// The table, or what stands in for it (an error, an empty folder).
-/// `avail`: the file area's height last frame, to fit a short table to its rows.
-pub fn content(s: &App, k: &Kit, avail: Option<f32>) -> El {
+/// The table or grid, or what stands in for it (an error, an empty folder).
+/// `size`: the file area's size last frame, to fit a short table to its rows and lay out the grid.
+pub fn content(s: &App, k: &Kit, size: Option<[f32; 2]>) -> El {
+    let avail = size.map(|z| z[1]);
     let frame = col()
         .key("content")
         .w_full()
@@ -54,7 +55,7 @@ pub fn content(s: &App, k: &Kit, avail: Option<f32>) -> El {
             tx.live_only();
         })
         .on_secondary_press(|s: &mut App, p: PointerPress, _tx: &mut Tx| {
-            s.table.clear_selection();
+            s.clear_selection();
             s.menu = Some((p, MenuFor::Background));
         });
     if let Some(err) = &s.error {
@@ -81,6 +82,9 @@ pub fn content(s: &App, k: &Kit, avail: Option<f32>) -> El {
         return frame.center().child(text(msg).font(k.ty.body).color(k.c.text_faint));
     }
 
+    if s.view_mode == crate::app::ViewMode::Grid {
+        return super::grid::content(s, k, frame, size);
+    }
     let kit = k.clone();
     let table = Table::new(|s: &App| &s.table, |s: &mut App| &mut s.table, |s: &App| s.shown.len(), row_id)
         .name("Files")
@@ -244,28 +248,42 @@ pub fn item_menu(s: &App, menu: Menu) -> Menu {
 
 pub fn background_menu(s: &App, menu: Menu) -> Menu {
     let inside = s.read_only();
-    menu.item(
-        MenuItem::new("New Folder…")
-            .disabled(inside)
-            .icon(&icons::FOLDER_PLUS)
-            .shortcut("Ctrl+Shift+N")
-            .on_select(close_then(|s: &mut App| s.start_new_folder())),
-    )
-    .item(MenuItem::new("New File…").disabled(inside).shortcut("Ctrl+Alt+N").on_select(close_then(|s: &mut App| s.start_new_file())))
-    .item(MenuItem::new("Paste").shortcut("Ctrl+V").disabled(s.clip.is_none() || inside).on_select(close_then(|s: &mut App| s.paste())))
-    .item(
-        MenuItem::new("Upload Files…").icon(&icons::UPLOAD).shortcut("Ctrl+U").disabled(!s.loc.is_remote() || inside).on_select_tx(close_then_tx(pick_upload)),
-    )
-    .separator()
-    .item(MenuItem::new("Show Hidden Files").checked(s.show_hidden).shortcut("Ctrl+H").on_select(close_then(|s: &mut App| s.toggle_hidden())))
-    .item(MenuItem::new("Reload").shortcut("F5").on_select(close_then(|s: &mut App| s.refresh())))
-    .item(MenuItem::new("Copy Path").shortcut("Ctrl+Shift+C").on_select_tx(close_then_tx(|s: &mut App, tx: &mut Tx| s.copy_path(tx))))
-    .item(MenuItem::new("Open Terminal Here").icon(&icons::TERMINAL).shortcut("F4").on_select(close_then(|s: &mut App| s.open_terminal())))
-    .item(MenuItem::new("New Tab").shortcut("Ctrl+N").on_select(close_then(|s: &mut App| s.new_tab(None))))
-    .item(MenuItem::new("New Window").on_select(close_then(|s: &mut App| s.new_window())))
-    .item(MenuItem::new("Clear Download Cache").on_select(close_then(|s: &mut App| s.clear_cache())))
-    .separator()
-    .item(MenuItem::new("Keyboard Shortcuts").shortcut("F1").on_select(close_then(|s: &mut App| s.dialog = Some(crate::app::Dialog::Shortcuts))))
+    let menu = menu
+        .item(
+            MenuItem::new("New Folder…")
+                .disabled(inside)
+                .icon(&icons::FOLDER_PLUS)
+                .shortcut("Ctrl+Shift+N")
+                .on_select(close_then(|s: &mut App| s.start_new_folder())),
+        )
+        .item(MenuItem::new("New File…").disabled(inside).shortcut("Ctrl+Alt+N").on_select(close_then(|s: &mut App| s.start_new_file())))
+        .item(MenuItem::new("Paste").shortcut("Ctrl+V").disabled(s.clip.is_none() || inside).on_select(close_then(|s: &mut App| s.paste())))
+        .item(
+            MenuItem::new("Upload Files…")
+                .icon(&icons::UPLOAD)
+                .shortcut("Ctrl+U")
+                .disabled(!s.loc.is_remote() || inside)
+                .on_select_tx(close_then_tx(pick_upload)),
+        )
+        .separator()
+        .item(MenuItem::new("View as Grid").checked(s.view_mode == ViewMode::Grid).shortcut("Ctrl+G").on_select(close_then(|s: &mut App| s.toggle_view())));
+    let menu = if s.view_mode == ViewMode::Grid {
+        GRID_SIZE_NAMES.iter().enumerate().fold(menu, |m, (i, name)| {
+            m.item(MenuItem::new(format!("{name} Icons")).checked(s.grid_size == i).on_select(close_then(move |s: &mut App| s.set_grid_size(i))))
+        })
+    } else {
+        menu
+    };
+    menu.separator()
+        .item(MenuItem::new("Show Hidden Files").checked(s.show_hidden).shortcut("Ctrl+H").on_select(close_then(|s: &mut App| s.toggle_hidden())))
+        .item(MenuItem::new("Reload").shortcut("F5").on_select(close_then(|s: &mut App| s.refresh())))
+        .item(MenuItem::new("Copy Path").shortcut("Ctrl+Shift+C").on_select_tx(close_then_tx(|s: &mut App, tx: &mut Tx| s.copy_path(tx))))
+        .item(MenuItem::new("Open Terminal Here").icon(&icons::TERMINAL).shortcut("F4").on_select(close_then(|s: &mut App| s.open_terminal())))
+        .item(MenuItem::new("New Tab").shortcut("Ctrl+N").on_select(close_then(|s: &mut App| s.new_tab(None))))
+        .item(MenuItem::new("New Window").on_select(close_then(|s: &mut App| s.new_window())))
+        .item(MenuItem::new("Clear Download Cache").on_select(close_then(|s: &mut App| s.clear_cache())))
+        .separator()
+        .item(MenuItem::new("Keyboard Shortcuts").shortcut("F1").on_select(close_then(|s: &mut App| s.dialog = Some(crate::app::Dialog::Shortcuts))))
 }
 
 /// Picks a local file with the desktop's chooser and uploads it here.

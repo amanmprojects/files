@@ -106,6 +106,16 @@ pub fn build(s: &App, k: &Kit, room: Option<f32>, bar: Option<f32>) -> Toolbar {
             .build(k)
             .key("hidden"),
     );
+    let grid = s.view_mode == crate::app::ViewMode::Grid;
+    trailing = trailing.child(
+        IconButton::new(if grid { &icons::LIST } else { &icons::GRID })
+            .variant(IconButtonVariant::GhostMuted)
+            .label(if grid { "List view" } else { "Grid view" })
+            .help(if grid { "List view (Ctrl+G)" } else { "Grid view (Ctrl+G)" })
+            .on_press(|s: &mut App| s.toggle_view())
+            .build(k)
+            .key("view-toggle"),
+    );
     if !tight {
         trailing = trailing
             .child(

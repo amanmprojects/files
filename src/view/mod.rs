@@ -1,6 +1,7 @@
 //! The window: sidebar, toolbar, the file table, the transfers pane and the dialogs.
 
 mod dialogs;
+mod grid;
 mod list;
 mod preview;
 mod sidebar;
@@ -27,7 +28,7 @@ pub fn view(s: &App, cx: &mut Cx<App>) -> El {
     };
     let mut layer = Vec::new();
 
-    let content = list::content(s, &k, cx.layout_size("content").map(|r| r[1]));
+    let content = list::content(s, &k, cx.layout_size("content"));
     let menu = context_menu("ctx", content, s.menu.map(|m| m.0)).min_width(230.0).on_close(|s: &mut App| s.menu = None);
     let menu = match s.menu.map(|m| m.1) {
         Some(MenuFor::Items) => list::item_menu(s, menu),

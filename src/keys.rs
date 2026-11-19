@@ -26,7 +26,7 @@ pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
     (
         "Select",
         &[
-            ("↑ ↓, Home, End, Page Up/Down", "Move"),
+            ("Arrows, Home, End, Page Up/Down", "Move"),
             ("Shift + those, Shift+click", "Extend the selection"),
             ("Ctrl+click", "Add or remove one"),
             ("Ctrl+A", "Select all"),
@@ -66,6 +66,8 @@ pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("Ctrl+= / Ctrl+- / Ctrl+0", "Zoom in / out / reset"),
             ("Ctrl+scroll", "Zoom"),
+            ("Ctrl+G", "Grid or list view"),
+            ("Ctrl+Alt+= / Ctrl+Alt+-", "Bigger / smaller grid icons"),
             ("Ctrl+H, Alt+.", "Show hidden files"),
             ("Ctrl+1 / 2 / 3 / 4", "Sort by name / modified / size / kind (again flips)"),
             ("Ctrl+B, F9", "Sidebar"),
@@ -114,6 +116,11 @@ pub fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
     let cmd_alt = |c: char| m.cmd && m.alt && !m.shift && ch == Some(c);
     let plain = !m.cmd && !m.ctrl && !m.alt && !m.logo;
 
+    // Grid icon size: Ctrl+Alt with the zoom keys, so checked before them.
+    if m.cmd && m.alt && matches!(ch, Some('=' | '+' | '-' | '_')) {
+        s.grid_zoom(if matches!(ch, Some('-' | '_')) { -1 } else { 1 });
+        return true;
+    }
     // These work everywhere, dialogs and text fields included.
     if ev.is_command('=') || ev.is_command('+') {
         s.zoom_step(1);
@@ -207,7 +214,7 @@ pub fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
             } else if s.clip.is_some() {
                 s.clip = None;
             } else {
-                s.table.clear_selection();
+                s.clear_selection();
             }
         }
         _ if rune_kit::shell::is_sidebar_toggle(ev) => s.sidebar.toggle(),
@@ -218,6 +225,7 @@ pub fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
         _ if cmd('o') => s.open_selection(),
         _ if cmd('i') => s.show_properties(),
         _ if cmd('h') => s.toggle_hidden(),
+        _ if cmd('g') => s.toggle_view(),
         _ if cmd('l') => crate::view::start_path_edit(s),
         _ if cmd('r') => s.refresh(),
         _ if cmd('e') => s.extract_here(),

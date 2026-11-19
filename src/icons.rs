@@ -121,3 +121,13 @@ icon!(
     "pin",
     r#"<path d="M9.6 2.8L13.2 6.4L11 7.6L9.2 9.4L9.4 12L4 6.6L6.6 6.8L8.4 5Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" fill="none"/><path d="M6.6 9.4L3 13" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>"#
 );
+icon!(
+    GRID,
+    "grid",
+    r#"<rect x="2.6" y="2.6" width="4.4" height="4.4" rx="1" stroke="currentColor" stroke-width="1.2" fill="none"/><rect x="9" y="2.6" width="4.4" height="4.4" rx="1" stroke="currentColor" stroke-width="1.2" fill="none"/><rect x="2.6" y="9" width="4.4" height="4.4" rx="1" stroke="currentColor" stroke-width="1.2" fill="none"/><rect x="9" y="9" width="4.4" height="4.4" rx="1" stroke="currentColor" stroke-width="1.2" fill="none"/>"#
+);
+icon!(
+    LIST,
+    "list",
+    r#"<path d="M5.5 4H13M5.5 8H13M5.5 12H13" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><circle cx="3" cy="4" r="0.9" fill="currentColor"/><circle cx="3" cy="8" r="0.9" fill="currentColor"/><circle cx="3" cy="12" r="0.9" fill="currentColor"/>"#
+);

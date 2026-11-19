@@ -1,6 +1,6 @@
 //! The explorer's state and everything a handler can do to it.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -10,6 +10,7 @@ use rune_kit::TableState;
 use rune_kit::shell::PaneState;
 
 use crate::archive::{self, Archive};
+use crate::grid::GridSel;
 use crate::jobs::{After, Direction, Job, JobState, Jobs};
 use crate::local;
 use crate::model::{self, Entry, Location, SortKey};
@@ -151,6 +152,7 @@ pub struct Tab {
     entries: Vec<Entry>,
     shown: Vec<usize>,
     table: TableState,
+    grid: GridSel,
     error: Option<String>,
     filter: TextEdit,
 }
@@ -167,11 +169,37 @@ impl Tab {
             entries: Vec::new(),
             shown: Vec::new(),
             table: new_table(),
+            grid: GridSel::default(),
             error: None,
             filter: TextEdit::new(""),
         }
     }
 }
+
+/// How the folder's items are laid out.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ViewMode {
+    /// The sortable table.
+    List,
+    /// Tiles with icons and thumbnails, as Nautilus's grid.
+    Grid,
+}
+
+/// The grid's icon sizes, in points: small, medium, large, huge.
+pub const GRID_SIZES: [f32; 4] = [64.0, 96.0, 128.0, 192.0];
+pub const GRID_SIZE_NAMES: [&str; 4] = ["Small", "Medium", "Large", "Huge"];
+
+/// A grid tile's picture beyond its type icon: a thumbnail being made, none, or one made
+/// (decoded while its tile is near the screen).
+pub enum Thumb {
+    Waiting,
+    None,
+    Known(PathBuf),
+    Image(PathBuf, rune::Image),
+}
+
+/// A thumbnail and the size and date of the file it was made for.
+pub type ThumbFor = (Option<u64>, Option<f64>, Thumb);
 
 fn new_table() -> TableState {
     let mut t = TableState::new().key("files").multi_select(true);
@@ -195,6 +223,30 @@ pub struct App {
     pub entries: Vec<Entry>,
     pub shown: Vec<usize>,
     pub table: TableState,
+    /// List or grid, for every tab. Saved between launches.
+    pub view_mode: ViewMode,
+    /// The grid's icon size, an index into `GRID_SIZES`. Saved between launches.
+    pub grid_size: usize,
+    /// The grid's selection (the list's is in `table`).
+    pub grid: GridSel,
+    /// Tiles to a row and rows to a screen, as last laid out.
+    pub grid_cols: usize,
+    pub grid_page: usize,
+    /// The grid rows on screen, as last reported.
+    grid_rows: std::ops::Range<usize>,
+    /// How far the grid is scrolled, set as it scrolls.
+    pub grid_scroll: std::rc::Rc<std::cell::Cell<f32>>,
+    /// Thumbnails of this folder's items, by name.
+    pub thumbs: HashMap<String, ThumbFor>,
+    /// Decoded icon-theme pictures, by file; the flag notes the view has drawn it decoded.
+    pub theme_icons: HashMap<PathBuf, (rune::Image, bool)>,
+    /// Thumbnails whose decoding the view hasn't seen finish.
+    thumbs_decoding: HashSet<String>,
+    thumb_pool: crate::thumbs::Pool,
+    /// The icon theme's tables were seen loaded.
+    icons_seen: bool,
+    /// An item to scroll into view on the next frame (after switching views).
+    pub reveal_req: Option<String>,
     pub sort: (SortKey, bool),
     pub loading: bool,
     pub error: Option<String>,
@@ -255,7 +307,7 @@ pub struct App {
     /// How far the file list is scrolled, worked out from where its rows are drawn.
     pub scroll_y: f32,
     /// Each tab's folders' scroll when left, to put back on Back, Forward, Up or a tab switch.
-    scroll_memory: HashMap<(String, Location), f32>,
+    scroll_memory: HashMap<(String, Location), (f32, ViewMode)>,
     /// The folder being entered should get its remembered scroll back.
     restore_scroll: bool,
     /// A scroll for the list to jump to on the next frame.
@@ -311,6 +363,19 @@ impl App {
             entries: Vec::new(),
             shown: Vec::new(),
             table,
+            view_mode: load_view().0,
+            grid_size: load_view().1,
+            grid: GridSel::default(),
+            grid_cols: 1,
+            grid_page: 1,
+            grid_rows: 0..0,
+            grid_scroll: Default::default(),
+            thumbs: HashMap::new(),
+            theme_icons: HashMap::new(),
+            thumbs_decoding: HashSet::new(),
+            thumb_pool: Default::default(),
+            icons_seen: false,
+            reveal_req: None,
             sort: (SortKey::Name, true),
             loading: false,
             error: None,
@@ -394,6 +459,8 @@ impl App {
     pub fn set_waker(&mut self, w: Waker) {
         self.waker = Some(w.clone());
         crate::theme::watch(w.clone(), self.theme_changed.clone());
+        crate::mime::load(w.clone());
+        self.thumb_pool.set_waker(w.clone());
         self.images = Some(rune::ImageCache::new(w.clone()));
         self.preview_req.set_waker(w.clone());
         self.complete_req.set_waker(w.clone());
@@ -452,7 +519,7 @@ impl App {
         if let Some(p) = self.loc.parent() {
             let child = self.loc.name();
             self.navigate(p, true);
-            self.table.select(child);
+            self.select_only(child);
         }
     }
 
@@ -463,7 +530,8 @@ impl App {
             self.scroll_memory.clear();
         }
         let key = (self.tabs[self.active].id.clone(), self.loc.clone());
-        self.scroll_memory.insert(key, self.scroll_y);
+        let y = if self.view_mode == ViewMode::Grid { self.grid_scroll.get() } else { self.scroll_y };
+        self.scroll_memory.insert(key, (y, self.view_mode));
     }
 
     /// A row of the list was drawn at window `y` (row `i`; rows are `row_h` tall under a
@@ -476,7 +544,8 @@ impl App {
     /// Asks for the remembered scroll of the folder shown, when it's being returned to.
     fn request_scroll(&mut self) {
         if self.restore_scroll
-            && let Some(y) = self.scroll_memory.get(&(self.tabs[self.active].id.clone(), self.loc.clone())).copied()
+            && let Some((y, mode)) = self.scroll_memory.get(&(self.tabs[self.active].id.clone(), self.loc.clone())).copied()
+            && mode == self.view_mode
             && y > 0.0
             && !self.entries.is_empty()
         {
@@ -493,7 +562,11 @@ impl App {
         self.filter = TextEdit::new("");
         self.path_edit = None;
         self.menu = None;
-        self.table.clear_selection();
+        self.clear_selection();
+        self.thumbs.clear();
+        self.thumbs_decoding.clear();
+        self.thumb_pool.clear();
+        self.grid_scroll.set(0.0);
         self.entries.clear();
         self.shown.clear();
         self.error = None;
@@ -602,6 +675,8 @@ impl App {
             }
         }
         self.refilter();
+        // New items may use icons not loaded yet.
+        self.icons_seen = false;
         // Returning here: put the scroll back once the rows are in, then stop.
         self.request_scroll();
         self.restore_scroll = false;
@@ -638,7 +713,7 @@ impl App {
 
     /// The selected names that still exist, in display order.
     pub fn selection(&self) -> Vec<String> {
-        self.shown.iter().map(|&i| &self.entries[i].name).filter(|n| self.table.is_selected(n)).cloned().collect()
+        self.shown.iter().map(|&i| &self.entries[i].name).filter(|n| self.is_selected(n)).cloned().collect()
     }
 
     /// Opens a folder; an archive as a folder; a file in its default app (downloading it from a
@@ -1083,7 +1158,7 @@ impl App {
         let what = if n == 1 { format!("“{}”", names[0]) } else { format!("{n} items") };
         let title = if trash { format!("Moving {what} to Trash") } else { format!("Deleting {what}") };
         self.jobs.push(Job::new(title, Direction::Local, vec![step]).refresh(self.loc.clone()));
-        self.table.clear_selection();
+        self.clear_selection();
     }
 
     pub fn start_new_folder(&mut self) {
@@ -1124,7 +1199,7 @@ impl App {
         self.dialog = None;
         let step = if file { ops::touch(&at) } else { ops::mkdir(&at) };
         self.jobs.push(Job::new(format!("Creating “{n}”"), Direction::Local, vec![step]).refresh(self.loc.clone()));
-        self.table.select(n);
+        self.select_only(n);
     }
 
     /// Opens the selection: every selected file in its app, or the selected folder.
@@ -1195,7 +1270,7 @@ impl App {
         let cycling = q.chars().count() > 1 && q.chars().all(|c| q.starts_with(c));
         let hit = if cycling {
             let c = q.chars().next().unwrap_or_default().to_string();
-            let cur = self.table.cursor().and_then(|id| names.iter().position(|n| *n == id));
+            let cur = self.cursor().and_then(|id| names.iter().position(|n| *n == id));
             let after = cur.map_or(0, |i| i + 1);
             names.iter().skip(after).chain(names.iter().take(after)).find(|n| n.to_lowercase().starts_with(&c)).copied()
         } else {
@@ -1203,7 +1278,7 @@ impl App {
         };
         match hit.map(str::to_owned) {
             Some(id) => {
-                self.table.reveal(id, tx);
+                self.reveal(id, tx);
                 true
             }
             None => false,
@@ -1221,8 +1296,16 @@ impl App {
         let sel = self.selection();
         let what = if sel.is_empty() { MenuFor::Background } else { MenuFor::Items };
         // Under the cursor row when it's on screen: rows are 28 points below a 36-point header.
-        let row = self.table.cursor().and_then(|id| self.shown.iter().position(|&i| self.entries[i].name == id)).unwrap_or(0);
-        let py = (y + 36.0 + (row as f32 + 1.0) * 28.0).min(y + h - 40.0).max(y + 40.0);
+        let at = self.cursor().and_then(|id| self.shown.iter().position(|&i| self.entries[i].name == id)).unwrap_or(0);
+        // Under the cursor's row when it's on screen: table rows are 28 points below a 36-point
+        // header; grid rows are roughly an icon and two lines of name.
+        let py = match self.view_mode {
+            ViewMode::List => y + 36.0 + (at as f32 + 1.0) * 28.0,
+            ViewMode::Grid => {
+                y + (at / self.grid_cols.max(1)) as f32 * (GRID_SIZES[self.grid_size] + 60.0) + GRID_SIZES[self.grid_size] - self.grid_scroll.get()
+            }
+        };
+        let py = py.min(y + h - 40.0).max(y + 40.0);
         self.menu = Some((PointerPress { x: x + (w * 0.25).min(220.0), y: py }, what));
     }
 
@@ -1262,7 +1345,7 @@ impl App {
         let (Some(a), Some(b)) = (self.end(&self.loc.join(&from)), self.end(&self.loc.join(&to))) else { return };
         self.dialog = None;
         self.jobs.push(Job::new(format!("Renaming “{from}”"), Direction::Local, vec![ops::rename(&a, &b)]).refresh(self.loc.clone()));
-        self.table.select(to);
+        self.select_only(to);
     }
 
     /// Downloads the selection from a host into the Downloads folder.
@@ -1400,6 +1483,11 @@ impl App {
         }
         if self.theme_changed.swap(false, std::sync::atomic::Ordering::SeqCst) {
             self.omarchy = crate::theme::load();
+            // A new Omarchy theme brings its own icon theme (its folder colour).
+            if let Some(w) = self.waker.clone() {
+                crate::mime::load(w);
+            }
+            self.icons_seen = false;
             changed = true;
         }
         if let Some(p) = self.preview_req.take() {
@@ -1410,6 +1498,7 @@ impl App {
             self.preview_image_seen = true;
             changed = true;
         }
+        changed |= self.poll_tiles();
         self.sync_preview();
         if self.swipe.active() && self.swipe.last.is_some_and(|t| clock - t >= SWIPE_IDLE) {
             self.finish_swipe();
@@ -1738,6 +1827,7 @@ impl App {
         t.entries = std::mem::take(&mut self.entries);
         t.shown = std::mem::take(&mut self.shown);
         t.table = std::mem::replace(&mut self.table, new_table());
+        t.grid = std::mem::take(&mut self.grid);
         t.error = self.error.take();
         t.filter = filter;
         t
@@ -1752,7 +1842,12 @@ impl App {
         self.entries = t.entries;
         self.shown = t.shown;
         self.table = t.table;
+        self.grid = t.grid;
         self.error = t.error;
+        self.thumbs.clear();
+        self.thumbs_decoding.clear();
+        self.thumb_pool.clear();
+        self.grid_scroll.set(0.0);
         self.filter = t.filter;
         self.path_edit = None;
         self.menu = None;
@@ -1894,7 +1989,7 @@ impl App {
                 self.new_tab(Some(loc));
             }
             if let Some(name) = select {
-                self.table.select(name);
+                self.select_only(name);
                 if how == Show::Properties {
                     self.side = Side::Preview;
                     self.activity.set_open(true);
@@ -1937,7 +2032,7 @@ impl App {
             return;
         }
         let sel = self.selection();
-        let want = match (sel.len(), self.table.cursor()) {
+        let want = match (sel.len(), self.cursor()) {
             (1, _) => Some(sel[0].clone()),
             (n, Some(c)) if n > 1 && sel.iter().any(|x| x == c) => Some(c.to_owned()),
             _ => None,
@@ -2015,14 +2110,284 @@ impl App {
         if names.is_empty() {
             return;
         }
-        let cur = self.table.cursor().and_then(|c| names.iter().position(|n| *n == c));
+        let cur = self.cursor().and_then(|c| names.iter().position(|n| *n == c));
         let next = match cur {
             Some(i) => (i as isize + delta).clamp(0, names.len() as isize - 1) as usize,
             None => 0,
         };
         let id = names[next].to_owned();
-        self.table.reveal(id, tx);
+        self.reveal(id, tx);
         self.sync_preview();
+    }
+
+    // ---- Selection, either view ----------------------------------------------------------------
+
+    pub fn is_selected(&self, name: &str) -> bool {
+        match self.view_mode {
+            ViewMode::List => self.table.is_selected(name),
+            ViewMode::Grid => self.grid.is_selected(name),
+        }
+    }
+
+    /// Selects `name` alone and puts the keyboard cursor on it.
+    pub fn select_only(&mut self, name: impl Into<String>) {
+        let name = name.into();
+        match self.view_mode {
+            ViewMode::List => self.table.select(name),
+            ViewMode::Grid => self.grid.select(name),
+        }
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.table.clear_selection();
+        self.grid.clear();
+    }
+
+    /// The keyboard cursor's item.
+    pub fn cursor(&self) -> Option<&str> {
+        match self.view_mode {
+            ViewMode::List => self.table.cursor(),
+            ViewMode::Grid => self.grid.cursor.as_deref(),
+        }
+    }
+
+    /// Selects `name` and scrolls it into view.
+    pub fn reveal(&mut self, name: String, tx: &mut Tx) {
+        match self.view_mode {
+            ViewMode::List => self.table.reveal(name, tx),
+            ViewMode::Grid => {
+                if let Some(row) = self.grid_row_key(&name) {
+                    tx.scroll_into_view_in("files", row);
+                }
+                self.grid.select(name);
+            }
+        }
+    }
+
+    /// The grid row holding `name`, by its key: the name of the row's first item.
+    pub fn grid_row_key(&self, name: &str) -> Option<String> {
+        let i = self.shown.iter().position(|&i| self.entries[i].name == name)?;
+        let first = i / self.grid_cols.max(1) * self.grid_cols.max(1);
+        Some(self.entries[self.shown[first]].name.clone())
+    }
+
+    /// The shown names, in order.
+    pub fn shown_names(&self) -> Vec<&str> {
+        self.shown.iter().map(|&i| self.entries[i].name.as_str()).collect()
+    }
+
+    // ---- Grid view -----------------------------------------------------------------------------
+
+    /// Switches between list and grid, keeping the selection (the list keeps one item of a
+    /// multiple selection: its table can't be handed more) and the cursor in view.
+    pub fn set_view(&mut self, mode: ViewMode) {
+        if mode == self.view_mode {
+            return;
+        }
+        match mode {
+            ViewMode::Grid => self.grid = GridSel::from_parts(self.table.selected().map(str::to_owned), self.table.cursor().map(str::to_owned)),
+            ViewMode::List => {
+                let keep = self.grid.cursor.clone().filter(|c| self.grid.is_selected(c)).or_else(|| self.selection().into_iter().next());
+                self.table.clear_selection();
+                if let Some(k) = keep {
+                    self.table.select(k);
+                }
+            }
+        }
+        self.view_mode = mode;
+        self.reveal_req = self.cursor().map(str::to_owned);
+        self.focus_req = Some("files");
+        self.icons_seen = false;
+        save_view(self.view_mode, self.grid_size);
+    }
+
+    pub fn toggle_view(&mut self) {
+        self.set_view(if self.view_mode == ViewMode::Grid { ViewMode::List } else { ViewMode::Grid });
+    }
+
+    /// A bigger (`dir` > 0) or smaller grid icon size; 0 sets `size` directly.
+    pub fn grid_zoom(&mut self, dir: i32) {
+        let last = GRID_SIZES.len() as i32 - 1;
+        self.grid_size = (self.grid_size as i32 + dir).clamp(0, last) as usize;
+        self.reveal_req = self.cursor().map(str::to_owned);
+        save_view(self.view_mode, self.grid_size);
+    }
+
+    pub fn set_grid_size(&mut self, size: usize) {
+        self.grid_size = size.min(GRID_SIZES.len() - 1);
+        self.reveal_req = self.cursor().map(str::to_owned);
+        save_view(self.view_mode, self.grid_size);
+    }
+
+    /// The grid was laid out `cols` tiles to a row with `page` rows to a screen.
+    pub fn grid_layout(&mut self, cols: usize, page: usize) -> bool {
+        let changed = (cols, page) != (self.grid_cols, self.grid_page);
+        self.grid_cols = cols.max(1);
+        self.grid_page = page.max(1);
+        if changed {
+            // The same rows hold other items now.
+            self.grid_visible(self.grid_rows.clone());
+        }
+        changed
+    }
+
+    /// A click on a tile: alone, Ctrl adds or removes it, Shift extends to it.
+    pub fn grid_click(&mut self, name: &str, ctrl: bool, shift: bool) {
+        let names: Vec<String> = self.shown_names().into_iter().map(str::to_owned).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        self.grid.click(name, &names, ctrl, shift);
+    }
+
+    /// The grid's own keys: arrows, Home, End, Page Up/Down (with Shift to extend), Ctrl+A.
+    pub fn grid_key(&mut self, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
+        let m = ev.mods;
+        if m.alt || m.logo {
+            return false;
+        }
+        let owned: Vec<String> = self.shown_names().into_iter().map(str::to_owned).collect();
+        let names: Vec<&str> = owned.iter().map(String::as_str).collect();
+        if ev.is_command('a') && !m.shift {
+            self.grid.select_all(&names);
+            return true;
+        }
+        if m.cmd || m.ctrl {
+            return false;
+        }
+        let Some(to) = crate::grid::target(&ev.key, self.grid.cursor_index(&names), names.len(), self.grid_cols, self.grid_page) else { return false };
+        self.grid.move_to(to, &names, m.shift);
+        if let Some(row) = self.grid_row_key(names[to]) {
+            tx.scroll_into_view_in("files", row);
+        }
+        true
+    }
+
+    /// Rows `rows` of the grid are on screen: asks for their thumbnails, and lets go of
+    /// decoded ones far from the screen.
+    pub fn grid_visible(&mut self, rows: std::ops::Range<usize>) -> bool {
+        self.grid_rows = rows.clone();
+        let cols = self.grid_cols.max(1);
+        let page = self.grid_page.max(1);
+        // A screen either side is asked for too, so scrolling a little finds them made.
+        let n = self.shown.len();
+        let span = |before: usize, after: usize| (before * cols).min(n)..(after * cols).min(n);
+        let want = span(rows.start.saturating_sub(page), rows.end + page);
+        let keep = span(rows.start.saturating_sub(page * 3), rows.end + page * 3);
+        let keep_names: HashSet<&str> = self.shown[keep].iter().map(|&i| self.entries[i].name.as_str()).collect();
+        for (name, (_, _, t)) in self.thumbs.iter_mut() {
+            if let Thumb::Image(p, _) = t
+                && !keep_names.contains(name.as_str())
+            {
+                *t = Thumb::Known(p.clone());
+            }
+        }
+        let lookup = crate::mime::get();
+        let remote = self.loc.is_remote();
+        let mut changed = false;
+        for &i in &self.shown[want] {
+            let e = &self.entries[i];
+            if let Some((size, modified, _)) = self.thumbs.get(&e.name)
+                && (*size, *modified) == (e.size, e.modified)
+            {
+                if let Some((_, _, t @ Thumb::Known(_))) = self.thumbs.get_mut(&e.name)
+                    && let (Thumb::Known(p), Some(images)) = (&*t, &self.images)
+                {
+                    let img = images.file(p, 256.0, 1.0);
+                    *t = Thumb::Image(p.clone(), img);
+                    self.thumbs_decoding.insert(e.name.clone());
+                    changed = true;
+                }
+                continue;
+            }
+            let mime = lookup.as_ref().and_then(|l| l.mime_of(&e.name)).map(str::to_owned);
+            let src = match &self.loc {
+                Location::Local(p) => crate::thumbs::Src::Local(p.join(&e.name)),
+                Location::Remote { host, path } => match self.target(host) {
+                    Some(t) => crate::thumbs::Src::Remote(t, model::posix_join(path, &e.name)),
+                    None => continue,
+                },
+                Location::Archive { .. } => continue,
+            };
+            if !crate::thumbs::wants(e, mime.as_deref(), remote) {
+                continue;
+            }
+            self.thumbs.insert(e.name.clone(), (e.size, e.modified, Thumb::Waiting));
+            self.thumb_pool.request(crate::thumbs::Request { item: self.loc.join(&e.name), entry: e.clone(), mime, src });
+        }
+        changed
+    }
+
+    /// The icon theme's picture for `e`, decoded, if it's ready to draw.
+    pub fn theme_icon(&self, e: &Entry) -> Option<&rune::Image> {
+        let lookup = crate::mime::get()?;
+        let dir = match &self.loc {
+            Location::Local(p) => Some(p.as_path()),
+            _ => None,
+        };
+        let path = lookup.icon(e, dir)?;
+        self.theme_icons.get(path).filter(|(img, _)| img.is_ready()).map(|(img, _)| img)
+    }
+
+    /// Lands made thumbnails and loads icon pictures for what's listed; true when a tile's
+    /// picture changed.
+    fn poll_tiles(&mut self) -> bool {
+        let mut changed = false;
+        for (item, out) in self.thumb_pool.take() {
+            let name = item.name();
+            if self.loc.join(&name) != item {
+                continue;
+            }
+            let Some((_, _, t)) = self.thumbs.get_mut(&name) else { continue };
+            *t = match (out, &self.images) {
+                (Some(p), Some(images)) => {
+                    let img = images.file(&p, 256.0, 1.0);
+                    self.thumbs_decoding.insert(name.clone());
+                    Thumb::Image(p, img)
+                }
+                _ => Thumb::None,
+            };
+        }
+        // Decoding ends on Rune's worker; the tile shows the picture once it's done.
+        let thumbs = &self.thumbs;
+        self.thumbs_decoding.retain(|n| match thumbs.get(n) {
+            Some((_, _, Thumb::Image(_, img))) if img.is_ready() || img.error().is_some() => {
+                changed = true;
+                false
+            }
+            Some((_, _, Thumb::Image(..))) => true,
+            _ => false,
+        });
+        if self.view_mode == ViewMode::Grid
+            && !self.icons_seen
+            && let Some(lookup) = crate::mime::get()
+        {
+            self.icons_seen = true;
+            self.load_theme_icons(&lookup);
+            // Types the thumbnailers handle are known now (office documents).
+            self.grid_visible(self.grid_rows.clone());
+            changed = true;
+        }
+        for (img, seen) in self.theme_icons.values_mut() {
+            if !*seen && (img.is_ready() || img.error().is_some()) {
+                *seen = true;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Starts decoding the icon pictures this folder's items use.
+    fn load_theme_icons(&mut self, lookup: &crate::mime::Lookup) {
+        let Some(images) = &self.images else { return };
+        let dir = match &self.loc {
+            Location::Local(p) => Some(p.clone()),
+            _ => None,
+        };
+        let paths: HashSet<&Path> = self.entries.iter().filter_map(|e| lookup.icon(e, dir.as_deref())).collect();
+        for p in paths {
+            if !self.theme_icons.contains_key(p) {
+                self.theme_icons.insert(p.to_owned(), (images.file(p, 256.0, 1.0), false));
+            }
+        }
     }
 
     // ---- Swipes --------------------------------------------------------------------------------
@@ -2116,6 +2481,10 @@ impl App {
             return;
         }
         self.zoom = z;
+        // Scripted and snapshot runs leave the user's setting alone.
+        if rune::tooling::headless_run().is_some() {
+            return;
+        }
         let text = format!("{z:.3}\n");
         std::thread::spawn(move || {
             let f = zoom_file();
@@ -2272,6 +2641,31 @@ fn load_zoom() -> f32 {
         .and_then(|t| t.trim().parse::<f32>().ok())
         .filter(|z| z.is_finite())
         .map_or(DEFAULT_ZOOM, |z| z.clamp(MIN_ZOOM, MAX_ZOOM))
+}
+
+fn view_file() -> PathBuf {
+    local::config_dir().join("view")
+}
+
+/// The view (`list` or `grid`) and the grid's icon size, as saved.
+fn load_view() -> (ViewMode, usize) {
+    // Headless runs (snapshots, the demo) start the same whatever was saved.
+    if rune::tooling::headless_run().is_some() {
+        return (ViewMode::List, 1);
+    }
+    let text = std::fs::read_to_string(view_file()).unwrap_or_default();
+    let mut it = text.split_whitespace();
+    let mode = if it.next() == Some("grid") { ViewMode::Grid } else { ViewMode::List };
+    let size = it.next().and_then(|n| n.parse().ok()).unwrap_or(1).min(GRID_SIZES.len() - 1);
+    (mode, size)
+}
+
+fn save_view(mode: ViewMode, size: usize) {
+    if rune::tooling::headless_run().is_some() {
+        return;
+    }
+    let _ = std::fs::create_dir_all(local::config_dir());
+    let _ = std::fs::write(view_file(), format!("{} {size}\n", if mode == ViewMode::Grid { "grid" } else { "list" }));
 }
 
 fn pinned_file() -> PathBuf {

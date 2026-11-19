@@ -32,6 +32,7 @@ pub fn view(s: &App, cx: &mut Cx<App>) -> El {
     let menu = match s.menu.map(|m| m.1) {
         Some(MenuFor::Items) => list::item_menu(s, menu),
         Some(MenuFor::Background) => list::background_menu(s, menu),
+        Some(MenuFor::Host) => sidebar::host_menu(s, menu),
         None => menu,
     };
     let content = menu.build(&k, &mut layer);

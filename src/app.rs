@@ -95,6 +95,8 @@ pub enum Resolve {
 pub enum MenuFor {
     Items,
     Background,
+    /// A server in the sidebar (`App::menu_host`).
+    Host,
 }
 
 pub struct Notice {
@@ -208,6 +210,14 @@ pub struct App {
     pub clip: Option<Clip>,
     pub jobs: Jobs,
     pub menu: Option<(PointerPress, MenuFor)>,
+    /// The server a `MenuFor::Host` menu is for.
+    pub menu_host: String,
+    /// Servers pinned to the top of the sidebar, in pin order. Saved between launches.
+    pub pinned: Vec<String>,
+    /// The unpinned servers' section is open.
+    pub more_servers_open: bool,
+    /// Dragging a pinned server to reorder the pins.
+    pub pin_reorder: rune_kit::shell::Reorder,
     pub dialog: Option<Dialog>,
     pub notice: Option<Notice>,
     /// UI zoom, as a browser's page zoom: 1 is Rune's native size. Saved between launches.
@@ -316,6 +326,10 @@ impl App {
             jobs: Jobs::default(),
             menu: None,
             dialog: None,
+            menu_host: String::new(),
+            pinned: load_pinned(),
+            more_servers_open: false,
+            pin_reorder: rune_kit::shell::Reorder::new(),
             notice: None,
             zoom: load_zoom(),
             want_focus: true,
@@ -804,6 +818,43 @@ impl App {
                 self.connect(t, None);
             }
         }
+    }
+
+    // ---- Pinned servers ----------------------------------------------------------------------
+
+    pub fn is_pinned(&self, id: &str) -> bool {
+        self.pinned.iter().any(|p| p == id)
+    }
+
+    /// Pins a server to the top of the sidebar, or unpins it.
+    pub fn toggle_pin(&mut self, id: &str) {
+        if self.is_pinned(id) {
+            self.pinned.retain(|p| p != id);
+        } else {
+            self.pinned.push(id.to_owned());
+        }
+        save_pinned(&self.pinned);
+    }
+
+    /// Moves a pinned server from one place in the pinned list to another (drag to reorder).
+    pub fn move_pin(&mut self, from: usize, to: usize) {
+        if from < self.pinned.len() && to < self.pinned.len() {
+            let id = self.pinned.remove(from);
+            self.pinned.insert(to, id);
+            save_pinned(&self.pinned);
+        }
+    }
+
+    /// Drops a server typed in by address from the sidebar (`~/.ssh/config` hosts stay).
+    pub fn forget_host(&mut self, id: &str) {
+        if self.hosts.iter().any(|h| h.id == id && h.home.is_some()) {
+            self.disconnect(id);
+        }
+        self.hosts.retain(|h| h.id != id || h.from_config);
+        if self.is_pinned(id) && !self.hosts.iter().any(|h| h.id == id) {
+            self.toggle_pin(id);
+        }
+        save_recent(&self.hosts);
     }
 
     pub fn disconnect(&mut self, id: &str) {
@@ -2217,6 +2268,25 @@ fn load_zoom() -> f32 {
         .and_then(|t| t.trim().parse::<f32>().ok())
         .filter(|z| z.is_finite())
         .map_or(DEFAULT_ZOOM, |z| z.clamp(MIN_ZOOM, MAX_ZOOM))
+}
+
+fn pinned_file() -> PathBuf {
+    local::config_dir().join("pinned")
+}
+
+fn load_pinned() -> Vec<String> {
+    std::fs::read_to_string(pinned_file()).map(|t| t.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect()).unwrap_or_default()
+}
+
+fn save_pinned(ids: &[String]) {
+    let text: String = ids.iter().map(|id| format!("{id}\n")).collect();
+    std::thread::spawn(move || {
+        let f = pinned_file();
+        if let Some(d) = f.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        let _ = std::fs::write(f, text);
+    });
 }
 
 fn recent_file() -> PathBuf {

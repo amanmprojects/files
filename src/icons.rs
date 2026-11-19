@@ -116,3 +116,8 @@ icon!(
     "folder-go",
     r#"<path d="M2.5 4.5C2.5 3.9 2.9 3.5 3.5 3.5H6.3L7.6 5H12.5C13.1 5 13.5 5.4 13.5 6V11.5C13.5 12.1 13.1 12.5 12.5 12.5H3.5C2.9 12.5 2.5 12.1 2.5 11.5Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" fill="none"/><path d="M6 9H10M8.5 7.5L10 9L8.5 10.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#
 );
+icon!(
+    PIN,
+    "pin",
+    r#"<path d="M9.6 2.8L13.2 6.4L11 7.6L9.2 9.4L9.4 12L4 6.6L6.6 6.8L8.4 5Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" fill="none"/><path d="M6.6 9.4L3 13" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>"#
+);

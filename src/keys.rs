@@ -1,5 +1,5 @@
 //! Every keyboard shortcut. Keys the focused control takes first (a text field's editing, the
-//! table's arrows, Home/End, Page Up/Down, Shift-extend, Ctrl+A and Enter) arrive here only when
+//! list's arrows, Home/End, Page Up/Down, Shift-extend, Ctrl+A and Enter) arrive here only when
 //! it passes them on.
 
 use rune::{Key, KeyEvent, Tx};
@@ -29,6 +29,7 @@ pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
             ("Arrows, Home, End, Page Up/Down", "Move"),
             ("Shift + those, Shift+click", "Extend the selection"),
             ("Ctrl+click", "Add or remove one"),
+            ("Drag across empty space", "Select with a box (Ctrl adds)"),
             ("Ctrl+A", "Select all"),
             ("Type a name", "Jump to it"),
             ("Ctrl+F", "Filter this folder"),
@@ -39,6 +40,7 @@ pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
         "Files",
         &[
             ("Ctrl+C / Ctrl+X / Ctrl+V", "Copy / Cut / Paste (scp between machines)"),
+            ("Drag onto a folder, place, server, tab or breadcrumb", "Move there (Ctrl copies; between machines it copies)"),
             ("Ctrl+D", "Duplicate"),
             ("Ctrl+E", "Extract the selected archives here"),
             ("F2", "Rename"),

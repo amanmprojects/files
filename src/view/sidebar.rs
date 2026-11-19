@@ -19,7 +19,7 @@ pub fn build(s: &App, k: &Kit) -> El {
         SidebarRow::new(label)
             .icon(icon)
             .height(30.0)
-            .selected(current == Some(label))
+            .selected(current == Some(label) || drop_on(s, &format!("place-{label}")))
             .on_select(move |s: &mut App, _| s.go(Location::Local(path.clone())))
             .build(k)
             .key(format!("place-{label}"))
@@ -76,8 +76,10 @@ pub fn build(s: &App, k: &Kit) -> El {
 /// index and the pin count); a dot marks a live connection; right-click for its menu.
 fn host_row(s: &App, k: &Kit, h: &Host, pin: Option<(usize, usize)>) -> El {
     let id = h.id.clone();
-    let mut r =
-        SidebarRow::new(h.id.clone()).icon(if pin.is_some() { &icons::PIN } else { &icons::SERVER }).height(30.0).selected(s.loc.host() == Some(h.id.as_str()));
+    let mut r = SidebarRow::new(h.id.clone())
+        .icon(if pin.is_some() { &icons::PIN } else { &icons::SERVER })
+        .height(30.0)
+        .selected(s.loc.host() == Some(h.id.as_str()) || drop_on(s, &format!("host-{}", h.id)));
     if h.home.is_some() {
         let close = id.clone();
         r = r.trailing(rune::icon(&icons::DOT, 8.0).color(k.c.success.icon)).on_close(move |s: &mut App, _| s.disconnect(&close));
@@ -132,4 +134,9 @@ pub fn host_menu(s: &App, menu: rune_kit::Menu) -> rune_kit::Menu {
         m = m.separator().item(MenuItem::new("Forget Server").danger(true).on_select(close(|s, id| s.forget_host(id))));
     }
     m
+}
+
+/// A drag of files would drop on the element keyed `key`.
+fn drop_on(s: &App, key: &str) -> bool {
+    s.file_drag.as_ref().and_then(|d| d.target.as_ref()).is_some_and(|t| t.key == key)
 }

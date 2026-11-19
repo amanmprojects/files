@@ -52,14 +52,8 @@ fn poll(s: &mut App, t: f64, tx: &mut Tx) -> bool {
     if let Some(y) = s.scroll_req.take() {
         tx.scroll_to_instant("files/viewport", 0.0, y);
     }
-    if let Some(name) = s.reveal_req.take() {
-        let key = match s.view_mode {
-            app::ViewMode::List => Some(name),
-            app::ViewMode::Grid => s.grid_row_key(&name),
-        };
-        if let Some(k) = key {
-            tx.scroll_into_view_in("files", k);
-        }
+    if let Some(k) = s.reveal_req.take().and_then(|name| s.row_key(&name)) {
+        tx.scroll_into_view_in("files", k);
     }
     // The window's title names the folder, as the taskbar and window switchers show it.
     let title = format!("{} — Files", s.loc.name());

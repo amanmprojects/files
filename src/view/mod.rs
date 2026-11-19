@@ -76,6 +76,14 @@ pub fn view(s: &App, cx: &mut Cx<App>) -> El {
     if s.swipe.active() {
         layer.push(swipe_arrow(s, &k));
     }
+    if let Some(fd) = &s.file_drag {
+        layer.push(drag_chip(s, &k, fd));
+    }
+    if let Some(b) = &s.band {
+        let (x, y) = (b.from[0].min(b.to[0]), b.from[1].min(b.to[1]));
+        let (w, h) = ((b.from[0] - b.to[0]).abs(), (b.from[1] - b.to[1]).abs());
+        layer.push(rune::el().key("band").absolute(x, y).size(w, h).radius(2.0).fill(k.c.icon_accent.alpha(0.15)).border(1.0, k.c.icon_accent.alpha(0.7)));
+    }
     if let Some(list) = toolbar::completions(s, &k, cx.layout("path-field")) {
         layer.push(list);
     }
@@ -153,6 +161,43 @@ fn side_pane(s: &App, k: &Kit) -> El {
         Side::Transfers => transfers::build(s, k).grow(1.0).min_h(0.0),
     };
     col().w_full().h_full().min_h(0.0).child(row().w_full().px(12.0).pt(8.0).pb(4.0).child(tabs)).child(content)
+}
+
+/// What follows the pointer while files are dragged: what they are, and where letting go puts
+/// them. Set below and right of the pointer, so the element under it is the drop target.
+fn drag_chip(s: &App, k: &Kit, fd: &crate::app::FileDrag) -> El {
+    let first = fd.names.first().and_then(|n| s.entry(n));
+    let what = match fd.names.len() {
+        1 => fd.names[0].clone(),
+        n => format!("{n} items"),
+    };
+    let icon = first.map_or(&glyphs::FILE, list::file_icon);
+    let (line, ink) = match &fd.target {
+        Some(t) => {
+            let copy = fd.copy || !fd.from.same_side(&t.loc) || fd.from.is_archive();
+            (format!("{} to {}", if copy { "Copy" } else { "Move" }, t.label), k.c.text_base)
+        }
+        None => ("Drop on a folder · Ctrl copies".to_owned(), k.c.text_faint),
+    };
+    col()
+        .key("drag-chip")
+        .absolute(fd.at[0] + 16.0, fd.at[1] + 14.0)
+        .max_w(320.0)
+        .px(10.0)
+        .py(6.0)
+        .gap(2.0)
+        .radius(k.radius.md)
+        .fill(k.c.surface_raised_base)
+        .border(1.0, k.c.border_base)
+        .shadow(6.0, 16.0, rune::Color::BLACK.alpha(0.35))
+        .child(
+            row()
+                .gap(6.0)
+                .center_y()
+                .child(rune::icon(icon, 14.0).color(k.c.icon_accent))
+                .child(text(what).font(k.ty.small_medium).color(k.c.text_base).truncate().shrink().min_w(0.0)),
+        )
+        .child(text(line).font(k.ty.text_small).color(ink).truncate())
 }
 
 /// The arrow a sideways swipe pulls in from the edge, filled once letting go would navigate.

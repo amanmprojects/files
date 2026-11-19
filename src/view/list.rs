@@ -1,18 +1,15 @@
-//! The folder's contents as a sortable table, its empty and error states, and its menus.
+//! The folder's contents as sortable rows (or, through `grid`, tiles), its empty and error
+//! states, and its menus.
 
 use std::borrow::Cow;
 
-use rune::{Align, El, Icon, PointerPress, Tx, col, row, text};
-use rune_kit::{Button, ButtonVariant, Cell, Kit, Menu, MenuItem, Table, TableColumn, glyphs};
+use rune::{Align, El, GrowthSpec, Icon, PointerPress, ScrollSpec, Tx, col, row, text};
+use rune_kit::{Button, ButtonVariant, Kit, Menu, MenuItem, TableStyle, glyphs};
 
 use crate::app::{App, GRID_SIZE_NAMES, MenuFor, ViewMode};
 use crate::icons;
 use crate::model::{Entry, Kind, extension, format_time, human_size, kind_label, mode_string};
 use crate::ops::Mode;
-
-fn row_id(s: &App, i: usize) -> Cow<'_, str> {
-    Cow::Borrowed(s.entries[s.shown[i]].name.as_str())
-}
 
 pub fn file_icon(e: &Entry) -> &'static Icon {
     if e.is_dir() {
@@ -30,17 +27,31 @@ pub fn file_icon(e: &Entry) -> &'static Icon {
     }
 }
 
-/// The table or grid, or what stands in for it (an error, an empty folder).
-/// `size`: the file area's size last frame, to fit a short table to its rows and lay out the grid.
+/// A column: id, title, width (None: the name, which takes the rest), bounds, alignment.
+type Column = (&'static str, &'static str, Option<f32>, f32, f32, Align);
+
+const COLUMNS: [Column; 4] = [
+    ("name", "Name", None, 180.0, f32::INFINITY, Align::Start),
+    ("modified", "Modified", Some(170.0), 120.0, 260.0, Align::Start),
+    ("size", "Size", Some(90.0), 64.0, 160.0, Align::End),
+    ("kind", "Kind", Some(120.0), 80.0, 240.0, Align::Start),
+];
+
+/// A column's width: as the user dragged it, else its own.
+fn col_width(s: &App, id: &'static str, default: f32, min: f32, max: f32) -> f32 {
+    s.col_widths.get(id).copied().unwrap_or(default).clamp(min, max)
+}
+
+/// The list or grid, or what stands in for it (an error, an empty folder).
+/// `size`: the file area's size last frame, to lay out the grid.
 pub fn content(s: &App, k: &Kit, size: Option<[f32; 2]>) -> El {
-    let avail = size.map(|z| z[1]);
     let frame = col()
         .key("content")
         .w_full()
         .min_h(0.0)
         .fill(k.c.bg_base)
         // Space for Quick Look: focus navigation would take it as a press before the window's
-        // keys see it, but an ancestor of the focused table hears it first.
+        // keys see it, but an ancestor of the focused list hears it first.
         .on_key(|s: &mut App, ev: &rune::KeyEvent, _tx: &mut Tx| {
             let m = ev.mods;
             if ev.key == rune::Key::Text(" ".into()) && !m.cmd && !m.ctrl && !m.alt {
@@ -50,7 +61,7 @@ pub fn content(s: &App, k: &Kit, size: Option<[f32; 2]>) -> El {
             false
         })
         .on_layout_tx(|s: &mut App, r: [f32; 4], tx: &mut Tx| {
-            // Bookkeeping for keyboard-opened menus; nothing on screen depends on it.
+            // Bookkeeping for keyboard-opened menus and the swipe arrow.
             s.content_at = r;
             tx.live_only();
         })
@@ -81,90 +92,213 @@ pub fn content(s: &App, k: &Kit, size: Option<[f32; 2]>) -> El {
         };
         return frame.center().child(text(msg).font(k.ty.body).color(k.c.text_faint));
     }
-
-    if s.view_mode == crate::app::ViewMode::Grid {
+    if s.view_mode == ViewMode::Grid {
         return super::grid::content(s, k, frame, size);
     }
+
+    let style = TableStyle::from_kit(k);
     let kit = k.clone();
-    let table = Table::new(|s: &App| &s.table, |s: &mut App| &mut s.table, |s: &App| s.shown.len(), row_id)
-        .name("Files")
-        .column(TableColumn::new("name", "Name").flex(3.0).min(180.0).sortable())
-        .column(TableColumn::new("modified", "Modified").width(170.0).min(120.0).max(240.0).sortable())
-        .column(TableColumn::new("size", "Size").width(90.0).min(64.0).max(160.0).align(Align::End).sortable())
-        .column(TableColumn::new("kind", "Kind").width(120.0).min(80.0).max(220.0).sortable())
-        .cell(move |s: &App, i, col| cell(s, &kit, i, &s.entries[s.shown[i]], col))
-        .on_sort(|s: &mut App, col, dir, _| s.set_sort(col, dir))
-        .on_open(|s: &mut App, id, _| {
-            let id = id.to_owned();
-            s.open(&id);
+    let row_h = style.row_height;
+    let rows = col()
+        .key("rows")
+        .w_full()
+        .growth(GrowthSpec::default())
+        .virtual_rows(s.shown.len(), row_h, |s: &App, i| row_id(s, i), move |s: &App, i| list_row(s, &kit, i))
+        .on_visible_rows(|s: &mut App, r| s.grid_visible(r));
+    let scroll = s.grid_scroll.clone();
+    let viewport = col()
+        .key("viewport")
+        .w_full()
+        .grow(1.0)
+        .min_h(0.0)
+        .scroll(ScrollSpec { stick_bottom: false })
+        .on_scroll_offset(move |at| scroll.set(at.offset[1]))
+        .on_layout_tx(move |s: &mut App, r: [f32; 4], tx: &mut Tx| {
+            if !s.grid_layout(1, (r[3] / row_h).floor() as usize) {
+                tx.live_only();
+            }
         })
-        .build(s, k);
-    // A table shorter than the area ends at its last row, so the space below is ours: inside
-    // the table it would be its scroll view, which swipes and clicks never reach past.
-    let style = rune_kit::TableStyle::from_kit(k);
-    let needed = style.header_height + s.shown.len() as f32 * style.row_height + 2.0;
-    match avail {
-        Some(h) if needed < h => frame.child(table.h(needed)).child(
-            rune::el().key("below-rows").w_full().grow(1.0).on_wheel(|s: &mut App, e, tx| s.swipe(&e, tx)).on_press(|s: &mut App| s.table.clear_selection()),
-        ),
-        _ => frame.child(table.grow(1.0).min_h(0.0)),
+        // Sideways swipes anywhere in the list; a drag on the empty part draws a selection
+        // box, and a click there clears the selection.
+        .on_wheel(|s: &mut App, e, tx| s.swipe(&e, tx))
+        .on_drag(|s: &mut App, d: &mut rune::Drag, tx: &mut Tx| s.band_drag(d, tx))
+        .child(rows);
+    let mut root = col()
+        .key("files")
+        .role("grid")
+        .label("Files")
+        .focusable(true)
+        // The selected rows and the cursor's outline show focus.
+        .no_focus_ring()
+        .w_full()
+        .grow(1.0)
+        .min_h(0.0)
+        .clip_soft(0.0)
+        .on_key(|s: &mut App, ev: &rune::KeyEvent, tx: &mut Tx| s.nav_key(ev, tx));
+    if let Some(c) = &s.sel.cursor {
+        root = root.active_descendant(c.clone());
+    }
+    frame.child(root.child(header(s, k, &style)).child(viewport))
+}
+
+/// The column titles: a press sorts by one (again flips it); a column's right edge drags to
+/// widen it, and a double click there puts it back.
+fn header(s: &App, k: &Kit, style: &TableStyle) -> El {
+    let sort = s.sort;
+    let mut h = row()
+        .key("header")
+        .role("row")
+        .w_full()
+        .h(style.header_height)
+        .child(rune::el().key("rule").pin(Some(0.0), None, Some(0.0), Some(0.0)).h(1.0).fill(style.rule).a11y_hidden());
+    for (j, (id, title, width, min, max, align)) in COLUMNS.into_iter().enumerate() {
+        let sorted = (crate::model::SortKey::from_column(id) == sort.0).then_some(sort.1);
+        let mut inner = row()
+            .gap(2.0)
+            .center_y()
+            .min_w(0.0)
+            .shrink()
+            .child(text(title).font(style.header_font).color(if sorted.is_some() { style.text } else { style.header_text }).truncate().shrink().min_w(0.0));
+        if let Some(asc) = sorted {
+            inner = inner.child(rune::icon(if asc { k.glyph.chevron_up } else { k.glyph.chevron_down }, 14.0).color(style.text));
+        }
+        let mut cell = row()
+            .key(id)
+            .role("columnheader")
+            .label(title)
+            .sorted(sorted)
+            .h_full()
+            .px(style.cell_pad)
+            .center_y()
+            .cursor(rune::Cursor::Pointer)
+            .hover(k.c.hover)
+            .on_press(move |s: &mut App| s.sort_by(id))
+            .child(inner);
+        cell = if align == Align::End { cell.justify_end() } else { cell };
+        cell = match width {
+            None => cell.w(0.0).grow(1.0).shrink().min_w(min),
+            Some(w) => cell.w(col_width(s, id, w, min, max)),
+        };
+        if let Some(w) = width {
+            // The edge between this column and the one before it: dragging it right widens
+            // this one (the name column takes up the difference).
+            let handle = rune::el()
+                .key("resize")
+                .role("separator")
+                .label(format!("Resize {title}"))
+                .pin(Some(-4.0), Some(6.0), None, Some(6.0))
+                .w(9.0)
+                .center()
+                .cursor(rune::Cursor::ResizeColumn)
+                .child(rune::el().w(1.0).h_full().fill(style.rule))
+                .on_drag(move |s: &mut App, d: &mut rune::Drag, _tx: &mut Tx| {
+                    if d.phase == rune::Phase::Down {
+                        d.data = col_width(s, id, w, min, max);
+                    }
+                    if d.cancelled() {
+                        s.col_widths.remove(id);
+                    } else {
+                        s.col_widths.insert(id, (d.data - d.dx).clamp(min, max));
+                    }
+                })
+                .on_double_press(move |s: &mut App| {
+                    s.col_widths.remove(id);
+                });
+            cell = cell.child(handle);
+        } else if j + 1 < COLUMNS.len() {
+            cell = cell.child(rune::el().pin(None, Some(8.0), Some(0.0), Some(8.0)).w(1.0).fill(style.rule).a11y_hidden());
+        }
+        h = h.child(cell);
+    }
+    h
+}
+
+fn row_id(s: &App, i: usize) -> Cow<'_, str> {
+    match s.shown.get(i) {
+        Some(&e) => Cow::Borrowed(s.entries[e].name.as_str()),
+        None => Cow::Owned(format!("row-{i}")),
     }
 }
 
-fn cell(s: &App, k: &Kit, i: usize, e: &Entry, col: &str) -> Cell {
+/// Row `i`: its cells, and what pressing, dragging and right-clicking it does.
+fn list_row(s: &App, k: &Kit, i: usize) -> El {
+    let Some(&at) = s.shown.get(i) else { return rune::el() };
+    let e = &s.entries[at];
+    let style = TableStyle::from_kit(k);
+    let selected = s.is_selected(&e.name);
+    let drop_here = s.file_drag.as_ref().and_then(|d| d.target.as_ref()).is_some_and(|t| t.key.strip_prefix("item:") == Some(e.name.as_str()));
+    let mut r = row().role("row").label(e.name.clone()).focus_selected(selected).w_full().h(style.row_height).center_y();
+    r = if drop_here {
+        r.fill(k.c.icon_accent.alpha(0.25)).outline(2.0, -2.0, k.c.icon_accent)
+    } else if selected {
+        r.fill(style.selected)
+    } else {
+        r.hover(style.stripe.mix(style.selected, 0.5))
+    };
+    if selected && s.sel.selected.len() > 1 && s.sel.cursor.as_deref() == Some(e.name.as_str()) {
+        r = r.outline(1.0, -1.0, k.c.border_focus);
+    }
+    for (id, _, width, min, max, align) in COLUMNS {
+        let c = row().key(id).role("gridcell").h_full().px(style.cell_pad).center_y().clip_soft(0.0).child(cell(s, k, e, id));
+        let c = if align == Align::End { c.justify_end() } else { c };
+        r = r.child(match width {
+            None => c.w(0.0).grow(1.0).shrink().min_w(min),
+            Some(w) => c.w(col_width(s, id, w, min, max)),
+        });
+    }
+    let (name, open, menu, dragged, rect) = (e.name.clone(), e.name.clone(), e.name.clone(), e.name.clone(), e.name.clone());
+    r.on_press_tx(move |s: &mut App, tx: &mut Tx| {
+        let m = tx.mods();
+        s.click_item(&name, m.cmd || m.ctrl, m.shift);
+        tx.focus("files", false);
+    })
+    .on_double_press(move |s: &mut App| s.open(&open))
+    .on_drag(move |s: &mut App, d: &mut rune::Drag, tx: &mut Tx| {
+        s.drag_item(&dragged, d, tx);
+    })
+    .on_secondary_press(move |s: &mut App, p: PointerPress, _tx: &mut Tx| {
+        if !s.is_selected(&menu) {
+            s.select_only(menu.clone());
+        }
+        s.menu = Some((p, MenuFor::Items));
+    })
+    .on_layout_tx(move |s: &mut App, r: [f32; 4], tx: &mut Tx| {
+        s.tile_rects.insert(rect.clone(), r);
+        tx.live_only();
+    })
+    // Rows sit inside the list's scroll view, which a sideways swipe never reaches past.
+    .on_wheel(|s: &mut App, e, tx| s.swipe(&e, tx))
+}
+
+/// What row `e` shows in column `col`.
+fn cell(s: &App, k: &Kit, e: &Entry, col: &str) -> El {
     let cut = s.clip.as_ref().is_some_and(|c| c.mode == Mode::Move && c.dir == s.loc && c.names.contains(&e.name));
     let ink = if cut { k.c.text_faint } else { k.c.text_base };
-    let content = match col {
+    match col {
         "name" => {
             let glyph = if e.is_dir() { k.c.icon_accent } else { k.c.icon_muted };
             let mut r = row()
                 .gap(8.0)
                 .center_y()
                 .min_w(0.0)
+                .shrink()
                 .child(rune::icon(file_icon(e), 16.0).color(if cut { k.c.icon_faint } else { glyph }))
-                .child(text(e.name.clone()).font(k.ty.ui).color(ink).truncate().shrink());
+                .child(text(e.name.clone()).font(k.ty.ui).color(ink).truncate().shrink().help_when_truncated(e.name.clone()));
             if e.link {
                 r = r.child(rune::icon(&icons::LINK, 12.0).color(k.c.icon_faint).help(if e.kind == Kind::Other { "Broken link" } else { "Link" }));
             }
             r
         }
-        "modified" => {
-            row().child(text(e.modified.map(|t| format_time(t, s.now, s.utc_offset)).unwrap_or_default()).font(k.ty.ui).color(k.c.text_muted).truncate())
-        }
-        "size" => row()
-            .justify_end()
-            .child(text(e.size.map(human_size).unwrap_or_else(|| if e.is_dir() { "—".into() } else { String::new() })).font(k.ty.mono).color(k.c.text_muted)),
+        "modified" => text(e.modified.map(|t| format_time(t, s.now, s.utc_offset)).unwrap_or_default()).font(k.ty.ui).color(k.c.text_muted).truncate().shrink(),
+        "size" => text(e.size.map(human_size).unwrap_or_else(|| if e.is_dir() { "—".into() } else { String::new() })).font(k.ty.mono).color(k.c.text_muted),
         _ => {
-            let label = kind_label(e);
-            let t = text(label).font(k.ty.ui).color(k.c.text_muted).truncate();
+            let t = text(kind_label(e)).font(k.ty.ui).color(k.c.text_muted).truncate().shrink();
             match e.mode {
-                Some(m) => row().child(t.help(mode_string(m))),
-                None => row().child(t),
+                Some(m) => t.help(mode_string(m)),
+                None => t,
             }
         }
-    };
-    // The name cell reports where its row is drawn, which says how far the list is scrolled
-    // (for putting it back on Back). Bookkeeping only: nothing on screen changes.
-    let content = if col == "name" {
-        let style = rune_kit::TableStyle::from_kit(k);
-        let (header_h, row_h) = (style.header_height, style.row_height);
-        content.on_layout_tx(move |s: &mut App, r: [f32; 4], tx: &mut Tx| {
-            s.track_scroll(i, r[1], header_h, row_h);
-            tx.live_only();
-        })
-    } else {
-        content
-    };
-    let name = e.name.clone();
-    // Rows sit inside the list's scroll view, which a sideways swipe never reaches past.
-    Cell::el(content.w_full().h_full().center_y().on_wheel(|s: &mut App, e, tx| s.swipe(&e, tx)).on_secondary_press(
-        move |s: &mut App, p: PointerPress, _tx: &mut Tx| {
-            if !s.table.is_selected(&name) {
-                s.table.select(name.clone());
-            }
-            s.menu = Some((p, MenuFor::Items));
-        },
-    ))
+    }
 }
 
 fn close_then(f: impl Fn(&mut App) + 'static) -> impl Fn(&mut App) + 'static {

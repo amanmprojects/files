@@ -5,12 +5,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rune::{Latest, PointerPress, TextEdit, Tx, Waker, WheelEvent};
-use rune_kit::SortDir;
-use rune_kit::TableState;
 use rune_kit::shell::PaneState;
 
 use crate::archive::{self, Archive};
-use crate::grid::GridSel;
+use crate::grid::Selection;
 use crate::jobs::{After, Direction, Job, JobState, Jobs};
 use crate::local;
 use crate::model::{self, Entry, Location, SortKey};
@@ -151,8 +149,7 @@ pub struct Tab {
     forward: Vec<Location>,
     entries: Vec<Entry>,
     shown: Vec<usize>,
-    table: TableState,
-    grid: GridSel,
+    sel: Selection,
     error: Option<String>,
     filter: TextEdit,
 }
@@ -168,8 +165,7 @@ impl Tab {
             forward: Vec::new(),
             entries: Vec::new(),
             shown: Vec::new(),
-            table: new_table(),
-            grid: GridSel::default(),
+            sel: Selection::default(),
             error: None,
             filter: TextEdit::new(""),
         }
@@ -179,7 +175,7 @@ impl Tab {
 /// How the folder's items are laid out.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ViewMode {
-    /// The sortable table.
+    /// Rows with columns to sort by.
     List,
     /// Tiles with icons and thumbnails, as Nautilus's grid.
     Grid,
@@ -198,14 +194,39 @@ pub enum Thumb {
     Image(PathBuf, rune::Image),
 }
 
+/// Points the pointer travels before a press becomes a drag.
+const DRAG_START: f32 = 6.0;
+
+/// Items being dragged to a folder.
+pub struct FileDrag {
+    pub names: Vec<String>,
+    pub from: Location,
+    /// The pointer, in window points.
+    pub at: [f32; 2],
+    /// What's under the pointer that would take them.
+    pub target: Option<DropAt>,
+    /// Ctrl is held: copy rather than move.
+    pub copy: bool,
+}
+
+/// A place a drag can drop into: the element it's on (to highlight it) and its folder.
+#[derive(Clone, Debug)]
+pub struct DropAt {
+    /// `item:NAME` for a folder in the list or grid, else the element's key.
+    pub key: String,
+    pub loc: Location,
+    pub label: String,
+}
+
+/// A rubber-band selection on the grid, in window points, and what was selected before it.
+pub struct Band {
+    pub from: [f32; 2],
+    pub to: [f32; 2],
+    keep: HashSet<String>,
+}
+
 /// A thumbnail and the size and date of the file it was made for.
 pub type ThumbFor = (Option<u64>, Option<f64>, Thumb);
-
-fn new_table() -> TableState {
-    let mut t = TableState::new().key("files").multi_select(true);
-    t.set_sort("name", SortDir::Ascending);
-    t
-}
 
 pub struct App {
     pub loc: Location,
@@ -222,19 +243,20 @@ pub struct App {
     /// The folder's entries as listed; `shown` indexes the visible ones in display order.
     pub entries: Vec<Entry>,
     pub shown: Vec<usize>,
-    pub table: TableState,
+    /// The selection and keyboard cursor, in either view.
+    pub sel: Selection,
+    /// Columns the user widened or narrowed in the list, by column id.
+    pub col_widths: HashMap<&'static str, f32>,
     /// List or grid, for every tab. Saved between launches.
     pub view_mode: ViewMode,
     /// The grid's icon size, an index into `GRID_SIZES`. Saved between launches.
     pub grid_size: usize,
-    /// The grid's selection (the list's is in `table`).
-    pub grid: GridSel,
-    /// Tiles to a row and rows to a screen, as last laid out.
+    /// Items to a row (1 in the list) and rows to a screen, as last laid out.
     pub grid_cols: usize,
     pub grid_page: usize,
     /// The grid rows on screen, as last reported.
     grid_rows: std::ops::Range<usize>,
-    /// How far the grid is scrolled, set as it scrolls.
+    /// How far the list or grid is scrolled, set as it scrolls.
     pub grid_scroll: std::rc::Rc<std::cell::Cell<f32>>,
     /// Thumbnails of this folder's items, by name.
     pub thumbs: HashMap<String, ThumbFor>,
@@ -247,6 +269,11 @@ pub struct App {
     icons_seen: bool,
     /// An item to scroll into view on the next frame (after switching views).
     pub reveal_req: Option<String>,
+    /// Items being dragged, and the grid's rubber band.
+    pub file_drag: Option<FileDrag>,
+    pub band: Option<Band>,
+    /// Where each mounted grid tile is drawn (window points), for the rubber band.
+    pub tile_rects: HashMap<String, [f32; 4]>,
     pub sort: (SortKey, bool),
     pub loading: bool,
     pub error: Option<String>,
@@ -304,8 +331,6 @@ pub struct App {
     waker: Option<Waker>,
     /// The window title last set (the current folder's name).
     pub title: String,
-    /// How far the file list is scrolled, worked out from where its rows are drawn.
-    pub scroll_y: f32,
     /// Each tab's folders' scroll when left, to put back on Back, Forward, Up or a tab switch.
     scroll_memory: HashMap<(String, Location), (f32, ViewMode)>,
     /// The folder being entered should get its remembered scroll back.
@@ -350,7 +375,6 @@ impl App {
                 hosts.push(Host { id, target: t, home: None, last: None, from_config: false });
             }
         }
-        let table = new_table();
         let mut app = App {
             loc: Location::Local(home.clone()),
             tabs: vec![Tab::new(Location::Local(home.clone()))],
@@ -362,10 +386,10 @@ impl App {
             forward: Vec::new(),
             entries: Vec::new(),
             shown: Vec::new(),
-            table,
+            sel: Selection::default(),
+            col_widths: HashMap::new(),
             view_mode: load_view().0,
             grid_size: load_view().1,
-            grid: GridSel::default(),
             grid_cols: 1,
             grid_page: 1,
             grid_rows: 0..0,
@@ -376,6 +400,9 @@ impl App {
             thumb_pool: Default::default(),
             icons_seen: false,
             reveal_req: None,
+            file_drag: None,
+            band: None,
+            tile_rects: HashMap::new(),
             sort: (SortKey::Name, true),
             loading: false,
             error: None,
@@ -417,7 +444,6 @@ impl App {
             theme_changed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             waker: None,
             title: String::new(),
-            scroll_y: 0.0,
             scroll_memory: HashMap::new(),
             restore_scroll: false,
             scroll_req: None,
@@ -530,15 +556,7 @@ impl App {
             self.scroll_memory.clear();
         }
         let key = (self.tabs[self.active].id.clone(), self.loc.clone());
-        let y = if self.view_mode == ViewMode::Grid { self.grid_scroll.get() } else { self.scroll_y };
-        self.scroll_memory.insert(key, (y, self.view_mode));
-    }
-
-    /// A row of the list was drawn at window `y` (row `i`; rows are `row_h` tall under a
-    /// `header_h` header at the top of the file area): how far the list is scrolled.
-    pub fn track_scroll(&mut self, i: usize, y: f32, header_h: f32, row_h: f32) {
-        let top = self.content_at[1] + header_h;
-        self.scroll_y = (i as f32 * row_h - (y - top)).max(0.0);
+        self.scroll_memory.insert(key, (self.grid_scroll.get(), self.view_mode));
     }
 
     /// Asks for the remembered scroll of the folder shown, when it's being returned to.
@@ -567,6 +585,8 @@ impl App {
         self.thumbs_decoding.clear();
         self.thumb_pool.clear();
         self.grid_scroll.set(0.0);
+        self.tile_rects.clear();
+        self.band = None;
         self.entries.clear();
         self.shown.clear();
         self.error = None;
@@ -575,7 +595,6 @@ impl App {
         {
             h.last = Some(path.clone());
         }
-        self.scroll_y = 0.0;
         // Seen recently: show it now; the listing below refreshes it.
         if let Some(cached) = self.listings.get(&self.loc) {
             self.entries = cached.clone();
@@ -697,8 +716,8 @@ impl App {
         self.shown = shown;
     }
 
-    pub fn set_sort(&mut self, column: &str, dir: SortDir) {
-        self.sort = (SortKey::from_column(column), dir == SortDir::Ascending);
+    pub fn set_sort(&mut self, key: SortKey, ascending: bool) {
+        self.sort = (key, ascending);
         self.refilter();
     }
 
@@ -1061,6 +1080,14 @@ impl App {
         }
         let Some(clip) = &self.clip else { return };
         let plan = Paste { mode: clip.mode, from: clip.dir.clone(), names: clip.names.clone(), to: self.loc.clone() };
+        self.plan_paste(plan);
+    }
+
+    /// Checks a paste or drop (not into itself; name clashes ask first), then runs it.
+    fn plan_paste(&mut self, plan: Paste) {
+        if plan.to.is_archive() {
+            return self.fail("Archives are read-only: extract it first to add to it".into());
+        }
         if plan.mode == Mode::Move && plan.from == plan.to {
             return;
         }
@@ -1072,7 +1099,8 @@ impl App {
                 }
             }
         }
-        let conflicts: Vec<String> = if plan.from == plan.to { Vec::new() } else { plan.names.iter().filter(|n| self.entry(n).is_some()).cloned().collect() };
+        let there = self.names_in(&plan.to);
+        let conflicts: Vec<String> = if plan.from == plan.to { Vec::new() } else { plan.names.iter().filter(|n| there.contains(n)).cloned().collect() };
         if conflicts.is_empty() {
             self.run_paste(plan, Resolve::KeepBoth);
         } else {
@@ -1088,11 +1116,25 @@ impl App {
         }
     }
 
+    /// What a folder holds, as far as is known without waiting: this folder's listing, a
+    /// local folder read now, or a server folder's recent listing (else nothing; a transfer
+    /// onto an existing name then fails rather than overwrite).
+    fn names_in(&self, loc: &Location) -> Vec<String> {
+        if *loc == self.loc {
+            return self.entries.iter().map(|e| e.name.clone()).collect();
+        }
+        let listed = match loc {
+            Location::Local(p) => local::list(p).ok(),
+            _ => self.listings.get(loc).cloned(),
+        };
+        listed.unwrap_or_default().into_iter().map(|e| e.name).collect()
+    }
+
     fn run_paste(&mut self, plan: Paste, how: Resolve) {
         let Some(to) = self.end(&plan.to) else {
             return self.fail("That server isn't connected any more".into());
         };
-        let mut taken: Vec<String> = self.entries.iter().map(|e| e.name.clone()).collect();
+        let mut taken: Vec<String> = self.names_in(&plan.to);
         let mut queued = 0;
         for name in &plan.names {
             let exists = taken.contains(name);
@@ -1249,9 +1291,9 @@ impl App {
 
     /// Sorts by a column; asking again for the same one flips the direction.
     pub fn sort_by(&mut self, column: &str) {
-        let dir = self.table.next_sort(column);
-        self.table.set_sort(column, dir);
-        self.set_sort(column, dir);
+        let key = SortKey::from_column(column);
+        let asc = if self.sort.0 == key { !self.sort.1 } else { true };
+        self.set_sort(key, asc);
     }
 
     /// Type-to-select: letters typed within a second of each other jump to the first name
@@ -1300,7 +1342,7 @@ impl App {
         // Under the cursor's row when it's on screen: table rows are 28 points below a 36-point
         // header; grid rows are roughly an icon and two lines of name.
         let py = match self.view_mode {
-            ViewMode::List => y + 36.0 + (at as f32 + 1.0) * 28.0,
+            ViewMode::List => y + 30.0 + (at as f32 + 1.0) * 28.0 - self.grid_scroll.get(),
             ViewMode::Grid => {
                 y + (at / self.grid_cols.max(1)) as f32 * (GRID_SIZES[self.grid_size] + 60.0) + GRID_SIZES[self.grid_size] - self.grid_scroll.get()
             }
@@ -1826,8 +1868,7 @@ impl App {
         t.forward = std::mem::take(&mut self.forward);
         t.entries = std::mem::take(&mut self.entries);
         t.shown = std::mem::take(&mut self.shown);
-        t.table = std::mem::replace(&mut self.table, new_table());
-        t.grid = std::mem::take(&mut self.grid);
+        t.sel = std::mem::take(&mut self.sel);
         t.error = self.error.take();
         t.filter = filter;
         t
@@ -1835,14 +1876,12 @@ impl App {
 
     fn put_tab(&mut self, t: Tab) {
         self.restore_scroll = true;
-        self.scroll_y = 0.0;
         self.loc = t.loc;
         self.back = t.back;
         self.forward = t.forward;
         self.entries = t.entries;
         self.shown = t.shown;
-        self.table = t.table;
-        self.grid = t.grid;
+        self.sel = t.sel;
         self.error = t.error;
         self.thumbs.clear();
         self.thumbs_decoding.clear();
@@ -2123,45 +2162,38 @@ impl App {
     // ---- Selection, either view ----------------------------------------------------------------
 
     pub fn is_selected(&self, name: &str) -> bool {
-        match self.view_mode {
-            ViewMode::List => self.table.is_selected(name),
-            ViewMode::Grid => self.grid.is_selected(name),
-        }
+        self.sel.is_selected(name)
     }
 
     /// Selects `name` alone and puts the keyboard cursor on it.
     pub fn select_only(&mut self, name: impl Into<String>) {
-        let name = name.into();
-        match self.view_mode {
-            ViewMode::List => self.table.select(name),
-            ViewMode::Grid => self.grid.select(name),
-        }
+        self.sel.select(name);
     }
 
     pub fn clear_selection(&mut self) {
-        self.table.clear_selection();
-        self.grid.clear();
+        self.sel.clear();
     }
 
     /// The keyboard cursor's item.
     pub fn cursor(&self) -> Option<&str> {
-        match self.view_mode {
-            ViewMode::List => self.table.cursor(),
-            ViewMode::Grid => self.grid.cursor.as_deref(),
-        }
+        self.sel.cursor.as_deref()
     }
 
     /// Selects `name` and scrolls it into view.
     pub fn reveal(&mut self, name: String, tx: &mut Tx) {
-        match self.view_mode {
-            ViewMode::List => self.table.reveal(name, tx),
-            ViewMode::Grid => {
-                if let Some(row) = self.grid_row_key(&name) {
-                    tx.scroll_into_view_in("files", row);
-                }
-                self.grid.select(name);
-            }
+        if let Some(row) = self.row_key(&name) {
+            tx.scroll_into_view_in("files", row);
         }
+        self.sel.select(name);
+    }
+
+    /// The key of the row holding `name`: its own name in the list; in the grid, the name of
+    /// the row's first item.
+    pub fn row_key(&self, name: &str) -> Option<String> {
+        if self.view_mode == ViewMode::List {
+            return Some(name.to_owned());
+        }
+        self.grid_row_key(name)
     }
 
     /// The grid row holding `name`, by its key: the name of the row's first item.
@@ -2178,21 +2210,10 @@ impl App {
 
     // ---- Grid view -----------------------------------------------------------------------------
 
-    /// Switches between list and grid, keeping the selection (the list keeps one item of a
-    /// multiple selection: its table can't be handed more) and the cursor in view.
+    /// Switches between list and grid, keeping the selection and the cursor in view.
     pub fn set_view(&mut self, mode: ViewMode) {
         if mode == self.view_mode {
             return;
-        }
-        match mode {
-            ViewMode::Grid => self.grid = GridSel::from_parts(self.table.selected().map(str::to_owned), self.table.cursor().map(str::to_owned)),
-            ViewMode::List => {
-                let keep = self.grid.cursor.clone().filter(|c| self.grid.is_selected(c)).or_else(|| self.selection().into_iter().next());
-                self.table.clear_selection();
-                if let Some(k) = keep {
-                    self.table.select(k);
-                }
-            }
         }
         self.view_mode = mode;
         self.reveal_req = self.cursor().map(str::to_owned);
@@ -2231,15 +2252,16 @@ impl App {
         changed
     }
 
-    /// A click on a tile: alone, Ctrl adds or removes it, Shift extends to it.
-    pub fn grid_click(&mut self, name: &str, ctrl: bool, shift: bool) {
+    /// A click on an item: alone, Ctrl adds or removes it, Shift extends to it.
+    pub fn click_item(&mut self, name: &str, ctrl: bool, shift: bool) {
         let names: Vec<String> = self.shown_names().into_iter().map(str::to_owned).collect();
         let names: Vec<&str> = names.iter().map(String::as_str).collect();
-        self.grid.click(name, &names, ctrl, shift);
+        self.sel.click(name, &names, ctrl, shift);
     }
 
-    /// The grid's own keys: arrows, Home, End, Page Up/Down (with Shift to extend), Ctrl+A.
-    pub fn grid_key(&mut self, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
+    /// The list's and grid's own keys: arrows, Home, End, Page Up/Down (with Shift to
+    /// extend), Ctrl+A.
+    pub fn nav_key(&mut self, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
         let m = ev.mods;
         if m.alt || m.logo {
             return false;
@@ -2247,15 +2269,20 @@ impl App {
         let owned: Vec<String> = self.shown_names().into_iter().map(str::to_owned).collect();
         let names: Vec<&str> = owned.iter().map(String::as_str).collect();
         if ev.is_command('a') && !m.shift {
-            self.grid.select_all(&names);
+            self.sel.select_all(&names);
             return true;
         }
         if m.cmd || m.ctrl {
             return false;
         }
-        let Some(to) = crate::grid::target(&ev.key, self.grid.cursor_index(&names), names.len(), self.grid_cols, self.grid_page) else { return false };
-        self.grid.move_to(to, &names, m.shift);
-        if let Some(row) = self.grid_row_key(names[to]) {
+        // A list has no columns to move between.
+        if self.view_mode == ViewMode::List && matches!(ev.key, rune::Key::Left | rune::Key::Right) {
+            return false;
+        }
+        let cols = if self.view_mode == ViewMode::List { 1 } else { self.grid_cols };
+        let Some(to) = crate::grid::target(&ev.key, self.sel.cursor_index(&names), names.len(), cols, self.grid_page) else { return false };
+        self.sel.move_to(to, &names, m.shift);
+        if let Some(row) = self.row_key(names[to]) {
             tx.scroll_into_view_in("files", row);
         }
         true
@@ -2265,7 +2292,7 @@ impl App {
     /// decoded ones far from the screen.
     pub fn grid_visible(&mut self, rows: std::ops::Range<usize>) -> bool {
         self.grid_rows = rows.clone();
-        let cols = self.grid_cols.max(1);
+        let cols = if self.view_mode == ViewMode::List { 1 } else { self.grid_cols.max(1) };
         let page = self.grid_page.max(1);
         // A screen either side is asked for too, so scrolling a little finds them made.
         let n = self.shown.len();
@@ -2273,6 +2300,11 @@ impl App {
         let want = span(rows.start.saturating_sub(page), rows.end + page);
         let keep = span(rows.start.saturating_sub(page * 3), rows.end + page * 3);
         let keep_names: HashSet<&str> = self.shown[keep].iter().map(|&i| self.entries[i].name.as_str()).collect();
+        // Items scrolled far off keep no stale rect for the rubber band to hit.
+        self.tile_rects.retain(|n, _| keep_names.contains(n.as_str()));
+        if self.view_mode == ViewMode::List {
+            return false;
+        }
         for (name, (_, _, t)) in self.thumbs.iter_mut() {
             if let Thumb::Image(p, _) = t
                 && !keep_names.contains(name.as_str())
@@ -2386,6 +2418,143 @@ impl App {
         for p in paths {
             if !self.theme_icons.contains_key(p) {
                 self.theme_icons.insert(p.to_owned(), (images.file(p, 256.0, 1.0), false));
+            }
+        }
+    }
+
+    // ---- Dragging ------------------------------------------------------------------------------
+
+    /// A drag on item `name` (a tile or a row): past a few points it carries the selection
+    /// (or just this item, when it isn't selected) toward a folder, place, server, tab or
+    /// breadcrumb; letting go there moves it (Ctrl: copies; across machines it always copies).
+    /// Returns true when the gesture was a click, for the caller to treat as one.
+    pub fn drag_item(&mut self, name: &str, d: &rune::Drag, tx: &mut Tx) -> bool {
+        let [x, y] = d.window_point();
+        match d.phase {
+            rune::Phase::Down => false,
+            rune::Phase::Move => {
+                if self.file_drag.is_none() {
+                    if d.dx.hypot(d.dy) < DRAG_START {
+                        return false;
+                    }
+                    if !self.is_selected(name) {
+                        self.select_only(name);
+                    }
+                    let names = self.selection();
+                    if names.is_empty() {
+                        return false;
+                    }
+                    self.file_drag = Some(FileDrag { names, from: self.loc.clone(), at: [x, y], target: None, copy: false });
+                }
+                let copy = tx.mods().cmd || tx.mods().ctrl;
+                if let Some(fd) = &mut self.file_drag {
+                    fd.at = [x, y];
+                    fd.copy = copy;
+                }
+                tx.element_at(x, y, |s: &mut App, picked: Option<rune::Picked>, _tx: &mut Tx| {
+                    let target = picked.and_then(|p| s.drop_target(p.path()));
+                    if let Some(fd) = &mut s.file_drag {
+                        fd.target = target;
+                    }
+                });
+                false
+            }
+            rune::Phase::Up => {
+                let Some(fd) = self.file_drag.take() else { return !d.cancelled() };
+                if !d.cancelled()
+                    && let Some(t) = fd.target
+                {
+                    self.drop_items(fd.from, fd.names, t.loc, fd.copy);
+                }
+                false
+            }
+        }
+    }
+
+    /// Where letting go over element `path` would put the dragged items, if anywhere.
+    fn drop_target(&self, path: &str) -> Option<DropAt> {
+        let fd = self.file_drag.as_ref()?;
+        let segs: Vec<&str> = path.split('/').collect();
+        let pick = |key: String, loc: Location, label: String| -> Option<DropAt> {
+            // Not into itself, and not into the folder they're already in.
+            if loc == fd.from || loc.is_archive() || fd.names.iter().any(|n| fd.from.join(n) == loc) {
+                return None;
+            }
+            Some(DropAt { key, loc, label })
+        };
+        // A folder in the list or grid: a tile, or a table row (keyed by name, under "rows").
+        let item = segs.iter().find_map(|s| s.strip_prefix("tile:")).or_else(|| {
+            let at = segs.iter().position(|s| *s == "rows")?;
+            (segs.get(at.checked_sub(2)?) == Some(&"files") && self.view_mode == ViewMode::List).then(|| segs.get(at + 1).copied())?
+        });
+        if let Some(name) = item {
+            let e = self.entry(name).filter(|e| e.is_dir())?;
+            return pick(format!("item:{name}"), self.loc.join(&e.name), e.name.clone());
+        }
+        for s in &segs {
+            if let Some(label) = s.strip_prefix("place-") {
+                let (l, _, p) = self.places.iter().find(|(l, _, _)| *l == label)?;
+                return pick(s.to_string(), Location::Local(p.clone()), (*l).to_owned());
+            }
+            if let Some(id) = s.strip_prefix("host-") {
+                let h = self.hosts.iter().find(|h| h.id == id)?;
+                // Only a connected server: its home is known and the connection is open.
+                let home = h.home.clone()?;
+                return pick(s.to_string(), Location::Remote { host: h.id.clone(), path: home }, h.id.clone());
+            }
+            if let Some(i) = s.strip_prefix("crumb-").and_then(|i| i.parse::<usize>().ok()) {
+                let (label, loc) = self.loc.crumbs().into_iter().nth(i)?;
+                return pick(s.to_string(), loc, label);
+            }
+            if let Some(i) = self.tab_index(s) {
+                let loc = self.tab_loc(i).clone();
+                return pick(s.to_string(), loc.clone(), loc.name());
+            }
+        }
+        None
+    }
+
+    /// Moves (or copies) `names` from `from` into `to`, asking about name clashes first.
+    pub fn drop_items(&mut self, from: Location, names: Vec<String>, to: Location, copy: bool) {
+        // Moving only works within one machine and never out of an archive.
+        let mode = if copy || !from.same_side(&to) || from.is_archive() { Mode::Copy } else { Mode::Move };
+        self.plan_paste(Paste { mode, from, names, to });
+    }
+
+    /// A rubber-band drag on the grid's empty space: selects the tiles it touches (with Ctrl,
+    /// adds them to the selection). A click without a drag clears the selection.
+    pub fn band_drag(&mut self, d: &rune::Drag, tx: &mut Tx) {
+        let [x, y] = d.window_point();
+        match d.phase {
+            rune::Phase::Down => {}
+            rune::Phase::Move => {
+                if self.band.is_none() {
+                    if d.dx.hypot(d.dy) < DRAG_START {
+                        return;
+                    }
+                    let keep = if tx.mods().cmd || tx.mods().ctrl { self.sel.selected.clone() } else { HashSet::new() };
+                    self.band = Some(Band { from: [x - d.dx, y - d.dy], to: [x, y], keep });
+                }
+                let Some(b) = &mut self.band else { return };
+                b.to = [x, y];
+                let (l, r) = (b.from[0].min(b.to[0]), b.from[0].max(b.to[0]));
+                let (t, bo) = (b.from[1].min(b.to[1]), b.from[1].max(b.to[1]));
+                let mut sel = b.keep.clone();
+                for (name, [rx, ry, rw, rh]) in &self.tile_rects {
+                    if *rx < r && rx + rw > l && *ry < bo && ry + rh > t {
+                        sel.insert(name.clone());
+                    }
+                }
+                let cursor = self.shown_names().into_iter().find(|n| sel.contains(*n)).map(str::to_owned);
+                self.sel.selected = sel;
+                if cursor.is_some() {
+                    self.sel.cursor = cursor;
+                }
+            }
+            rune::Phase::Up => {
+                if self.band.take().is_none() && !d.cancelled() {
+                    self.clear_selection();
+                }
             }
         }
     }

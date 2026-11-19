@@ -69,7 +69,8 @@ pub fn content(s: &App, k: &Kit, frame: El, size: Option<[f32; 2]>) -> El {
         })
         // Sideways swipes and clicks between tiles: the scroll view would take them otherwise.
         .on_wheel(|s: &mut App, e, tx| s.swipe(&e, tx))
-        .on_press(|s: &mut App| s.clear_selection())
+        // A drag on the empty space draws a selection box; a click clears the selection.
+        .on_drag(|s: &mut App, d: &mut rune::Drag, tx: &mut Tx| s.band_drag(d, tx))
         .child(body);
 
     let mut root = col()
@@ -83,8 +84,8 @@ pub fn content(s: &App, k: &Kit, frame: El, size: Option<[f32; 2]>) -> El {
         .grow(1.0)
         .min_h(0.0)
         .clip_soft(0.0)
-        .on_key(|s: &mut App, ev: &rune::KeyEvent, tx: &mut Tx| s.grid_key(ev, tx));
-    if let Some(c) = &s.grid.cursor {
+        .on_key(|s: &mut App, ev: &rune::KeyEvent, tx: &mut Tx| s.nav_key(ev, tx));
+    if let Some(c) = &s.sel.cursor {
         root = root.active_descendant(format!("tile:{c}"));
     }
     frame.child(root.child(viewport))
@@ -104,7 +105,7 @@ fn grid_row(s: &App, k: &Kit, r: usize, cols: usize, icon: f32) -> El {
 }
 
 fn tile(s: &App, k: &Kit, e: &Entry, icon: f32) -> El {
-    let selected = s.grid.is_selected(&e.name);
+    let selected = s.sel.is_selected(&e.name);
     let cut = s.clip.as_ref().is_some_and(|c| c.mode == Mode::Move && c.dir == s.loc && c.names.contains(&e.name));
     let style = rune_kit::TableStyle::from_kit(k);
     let label = text(e.name.clone())
@@ -134,23 +135,37 @@ fn tile(s: &App, k: &Kit, e: &Entry, icon: f32) -> El {
         .radius(k.radius.lg)
         .child(picture)
         .child(label);
-    t = if selected { t.fill(style.selected) } else { t.hover(k.c.hover) };
-    if selected && s.grid.selected.len() > 1 && s.grid.cursor.as_deref() == Some(e.name.as_str()) {
+    let drop_here = s.file_drag.as_ref().and_then(|d| d.target.as_ref()).is_some_and(|t| t.key.strip_prefix("item:") == Some(e.name.as_str()));
+    t = if drop_here {
+        t.fill(k.c.icon_accent.alpha(0.25)).outline(2.0, -2.0, k.c.icon_accent)
+    } else if selected {
+        t.fill(style.selected)
+    } else {
+        t.hover(k.c.hover)
+    };
+    if selected && s.sel.selected.len() > 1 && s.sel.cursor.as_deref() == Some(e.name.as_str()) {
         t = t.outline(1.0, -1.0, k.c.border_focus);
     }
     if cut {
         t = t.opacity(0.45);
     }
-    let (name, open, menu) = (e.name.clone(), e.name.clone(), e.name.clone());
+    let (name, open, menu, dragged, at) = (e.name.clone(), e.name.clone(), e.name.clone(), e.name.clone(), e.name.clone());
     t.on_press_tx(move |s: &mut App, tx: &mut Tx| {
         let m = tx.mods();
-        s.grid_click(&name, m.cmd || m.ctrl, m.shift);
+        s.click_item(&name, m.cmd || m.ctrl, m.shift);
         tx.focus("files", false);
+    })
+    .on_drag(move |s: &mut App, d: &mut rune::Drag, tx: &mut Tx| {
+        s.drag_item(&dragged, d, tx);
+    })
+    .on_layout_tx(move |s: &mut App, r: [f32; 4], tx: &mut Tx| {
+        s.tile_rects.insert(at.clone(), r);
+        tx.live_only();
     })
     .on_double_press(move |s: &mut App| s.open(&open))
     .on_secondary_press(move |s: &mut App, p: PointerPress, _tx: &mut Tx| {
-        if !s.grid.is_selected(&menu) {
-            s.grid.select(menu.clone());
+        if !s.sel.is_selected(&menu) {
+            s.sel.select(menu.clone());
         }
         s.menu = Some((p, MenuFor::Items));
     })

@@ -21,7 +21,7 @@ It browses local folders, archives and SSH servers in tabs, copies between them 
 [Rune](https://github.com/anomalyco/rune) is a native UI framework for Rust from [Anomaly](https://github.com/anomalyco) (the team behind OpenCode): its own renderer on the GPU (wgpu), text shaping, Taffy layout and spring animation, with views written as plain functions of state. This app is a Rune app from top to bottom:
 
 - **Views**: the whole window is one `fn view(&App, &mut Cx) -> El`, rebuilt from state; Rune diffs it and animates what changed on springs.
-- **rune-kit components**: the sidebar and panes (`SplitView`, `Sidebar`), the virtualised file list (`Table`) and grid (virtual rows of tiles, `El::virtual_rows`), the tab bar (`TabStrip`), menus, dialogs, text fields, segmented controls, rendered Markdown and syntax highlighting in previews.
+- **rune-kit components**: the sidebar and panes (`SplitView`, `Sidebar`), the file list and grid (both on `El::virtual_rows`, so only the rows on screen are built), the tab bar (`TabStrip`), menus, dialogs, text fields, segmented controls, rendered Markdown and syntax highlighting in previews.
 - **Rendering**: images and thumbnails through Rune's image cache, the terminal as rows of rich text in the system's monospace font, the UI zoom (Ctrl+= / Ctrl+-) as Rune's page zoom, the Omarchy theme through rune-kit's palette.
 - **Platform**: Wayland and X11 windows, keyboard focus and key routing, trackpad gestures (the back/forward swipe), the clipboard (files included), and the app id Hyprland sees.
 - **Testing**: Rune runs any app headless with a virtual clock, so every feature here was checked by scripted runs that click, type and scroll, then render PNGs or dump the element tree (`--script`, `--snap`, `--tree`).
@@ -36,7 +36,8 @@ Rune is pre-release; this app pins a `dev` revision in `Cargo.toml`.
 - **The desktop's file manager**: `install.sh` makes it the default for folders (`xdg-open`, "Open folder" everywhere) and the `org.freedesktop.FileManager1` D-Bus service ("Show in folder" in browsers, editors and download lists). It runs as one instance: another launch, an `xdg-open` or a D-Bus call opens a tab in the running window. Copying local files puts them on the clipboard as files (other apps paste them), and pasting files another app copied copies or uploads them here. The window's title names the folder shown.
 - **Omarchy**: colours follow Omarchy's current theme (and change with it), monospace text uses the system's monospace font (Omarchy's Nerd Font), and files whose default app runs in a terminal (nvim, helix) open in one through `xdg-terminal-exec`.
 - **Grid view**: Ctrl+G (or the toolbar button) switches between the table and a grid of tiles, as in Nautilus. Folders and files show the desktop icon theme's pictures (Omarchy's Yaru folders in the theme's colour, Word, spreadsheet and PDF icons), picked through shared-mime-info's type for each name. Photos, PDF first pages, video frames (on a film strip), album covers, and whatever the desktop's thumbnailers handle (office documents through `gsf-office-thumbnailer`) show as thumbnails. Thumbnails Nautilus and other apps already made in `~/.cache/thumbnails` are reused; new ones are made on three workers, newest request first, and cached in `~/.cache/files/thumbs`. Small files on a server (under 8 MB) get thumbnails too. Four icon sizes (Ctrl+Alt+= / Ctrl+Alt+-, or the background menu). Arrows move by tile and by row, Shift extends, Ctrl+click adds; the view and size are remembered.
-- **Local browsing**: sidebar places (your XDG folders and `/`), breadcrumbs or a typed path (Ctrl+L), back/forward/up, a sortable table (name, modified, size, kind) with resizable columns, multi-select, a filter box, and hidden files on Ctrl+H.
+- **Dragging**: drag files onto a folder (in the list or grid), a sidebar place, a connected server, a tab or a breadcrumb to move them there; hold Ctrl to copy. Between machines a drop copies, over scp. A chip by the pointer says what will happen ("Move to Photos"), and the folder under it lights up. Dragging across empty space draws a selection box (Ctrl adds to the selection).
+- **Local browsing**: sidebar places (your XDG folders and `/`), breadcrumbs or a typed path (Ctrl+L), back/forward/up, sortable columns (name, modified, size, kind; drag a column's edge to resize it), multi-select, a filter box, and hidden files on Ctrl+H.
 - **SSH servers**: every `Host` in `~/.ssh/config` (and files it `Include`s) appears under Servers. Right-click one to pin it: pinned servers stay at the top (drag to reorder), and the rest fold into a "More servers" section. The same menu connects, disconnects, opens it in a new tab, copies its address, or forgets one you typed in. Connect to anything else with Ctrl+K: `user@host`, `host:2222`, `user@host:/path`, `ssh://user@host:port/path`, with an optional password or private key file (such as an AWS `.pem`).
 - **scp transfers**: copy (Ctrl+C) or cut (Ctrl+X) on one machine and paste (Ctrl+V) on another. Local → server uploads, server → local downloads, and server → other server goes through a private staging folder on this machine. Each item is its own job in the transfers pane, with cancel. At most 4 run at once, which stays under OpenSSH's 10-session-per-connection limit.
 - **File operations**, local or remote: new folder, rename (F2), delete (local files go to the Trash through `gio trash`; Shift+Delete and remote deletes ask first), copy within a machine (`cp -a`), move (`mv`), and a Replace / Keep Both / Skip prompt on name conflicts.
@@ -109,6 +110,7 @@ F1 (or Ctrl+/) shows all of these in the app.
 | Arrows, Home, End, Page Up/Down | Move |
 | Shift + those, Shift+click | Extend the selection |
 | Ctrl+click | Add or remove one |
+| Drag across empty space | Select with a box (Ctrl adds) |
 | Ctrl+A | Select all |
 | Type a name | Jump to it |
 | Ctrl+F | Filter this folder |
@@ -119,6 +121,7 @@ F1 (or Ctrl+/) shows all of these in the app.
 | Key | Action |
 | --- | --- |
 | Ctrl+C / Ctrl+X / Ctrl+V | Copy / Cut / Paste (scp between machines) |
+| Drag onto a folder, place, server, tab or breadcrumb | Move there (Ctrl copies; between machines it copies) |
 | Ctrl+D | Duplicate |
 | Ctrl+E | Extract the selected archives here |
 | F2 | Rename |
@@ -187,7 +190,7 @@ F1 (or Ctrl+/) shows all of these in the app.
 | `src/local.rs` | Local listing and XDG folders |
 | `src/ssh.rs` | `Target` parsing, ssh/scp commands, remote listing, ssh config hosts, error classification |
 | `src/preview.rs` | Making previews on a worker: thumbnails, text, tags, archive and folder summaries |
-| `src/grid.rs` | The grid's selection and arrow-key movement |
+| `src/grid.rs` | The selection both views share, and arrow-key movement through rows of items |
 | `src/mime.rs` | File types from names (shared-mime-info) and their icon-theme pictures |
 | `src/thumbs.rs` | Grid thumbnails: the shared thumbnail cache, the desktop's thumbnailers, a worker pool |
 | `src/term.rs` | The terminal: a PTY and `alacritty_terminal`'s emulator, rows of coloured text, key encoding |
@@ -200,7 +203,7 @@ F1 (or Ctrl+/) shows all of these in the app.
 | `src/jobs.rs` | The job runner: steps on a thread, cancel by process group, results through the window's waker |
 | `src/app.rs` | App state and every action |
 | `src/keys.rs` | Every keyboard shortcut, and the list the F1 sheet shows |
-| `src/view/` | Sidebar, toolbar, table, grid, transfers pane, dialogs |
+| `src/view/` | Sidebar, toolbar, list, grid, transfers pane, dialogs |
 
 ## Testing
 
@@ -234,7 +237,6 @@ Rune apps also run headless, which is how the UI was checked: `files DIR --snap 
 
 ## Limitations
 
-- The grid has no rubber-band (drag) selection yet; use Shift and Ctrl clicks. Switching from a multiple selection in the grid to the list keeps one item selected.
 - Transfers show running/done/failed but not a percentage: `scp` prints progress only to a terminal.
 - Archives are read-only: there's no adding to or creating archives.
 - It isn't a file *chooser*: apps' Open and Save dialogs still come from the XDG desktop portal (GTK's or GNOME's), which would need a separate portal backend.
@@ -242,6 +244,6 @@ Rune apps also run headless, which is how the UI was checked: `files DIR --snap 
 - A Nautilus already running as a background D-Bus service keeps `org.freedesktop.FileManager1` until it exits (or the next login), since it doesn't allow its name to be taken over.
 - The swipe needs trackpad deltas marked precise; whether a given Linux touchpad driver and compositor deliver them that way is up to them. Mouse wheels never trigger it.
 - A remote file opened in an app is a downloaded copy; saving it doesn't upload it back.
-- Dropping files in from other apps works on X11, not Wayland (winit 0.30 reports no file drags there). Dragging files out to other apps isn't supported on Linux yet.
+- Dropping files in from other apps works on X11, not Wayland (winit 0.30 reports no file drags there). Dragging files out to other apps isn't possible on Linux yet: Rune starts a system drag on macOS only, so drags work within Files (Ctrl+C there and paste in the other app instead).
 - Password logins answer one password prompt. Keyboard-interactive two-factor prompts aren't supported; use keys or the agent.
 - Two aliases for the same host, port and user share one connection, so the second skips its own host-key check. The server was already verified by the first.

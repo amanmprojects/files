@@ -1,19 +1,19 @@
-//! The grid view's selection and keyboard movement. The list view keeps its selection in the
-//! table's own state; the grid keeps the same things (selected names, the keyboard cursor and
-//! the anchor Shift extends from) here.
+//! The selection and keyboard movement the list and grid share: the selected names, the
+//! keyboard cursor and the anchor Shift extends from, and where arrow keys take the cursor in
+//! rows of items (one item to a row in the list).
 
 use std::collections::HashSet;
 
 use rune::Key;
 
 #[derive(Default, Clone, Debug)]
-pub struct GridSel {
+pub struct Selection {
     pub selected: HashSet<String>,
     pub cursor: Option<String>,
     anchor: Option<String>,
 }
 
-impl GridSel {
+impl Selection {
     pub fn is_selected(&self, id: &str) -> bool {
         self.selected.contains(id)
     }
@@ -29,13 +29,6 @@ impl GridSel {
 
     pub fn clear(&mut self) {
         self.selected.clear();
-    }
-
-    /// A selection carried over from the list: its names and cursor.
-    pub fn from_parts(selected: impl IntoIterator<Item = String>, cursor: Option<String>) -> GridSel {
-        let selected: HashSet<String> = selected.into_iter().collect();
-        let cursor = cursor.or_else(|| selected.iter().next().cloned());
-        GridSel { anchor: cursor.clone(), cursor, selected }
     }
 
     pub fn select_all(&mut self, names: &[&str]) {
@@ -129,7 +122,7 @@ mod tests {
     #[test]
     fn selects() {
         let names = ["a", "b", "c", "d", "e"];
-        let mut s = GridSel::default();
+        let mut s = Selection::default();
         s.click("b", &names, false, false);
         s.click("d", &names, false, true);
         assert_eq!(s.selected.len(), 3);

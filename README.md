@@ -8,6 +8,10 @@
 
 It browses local folders, archives and SSH servers in tabs, copies between them with `scp`, previews files, has a built-in terminal, and stands in for Nautilus as the desktop's file manager (made for Omarchy, works on any Linux desktop).
 
+![A 40-second tour: previews, Quick Look, an archive opened as a folder, path completion, tabs, the terminal panel, an upload over scp, a swipe back](assets/demo.gif)
+
+<sub>Recorded with Rune's own headless renderer replaying a scripted session (`demo/record.sh`): every frame, spring and transition is the app's real rendering. Keys pressed show in the corner.</sub>
+
 ![Two tabs, a photo previewed in the side pane, and the terminal panel](assets/screenshots/files.png)
 
 ## Built with Rune
@@ -181,6 +185,7 @@ F1 (or Ctrl+/) shows all of these in the app.
 | `src/term.rs` | The terminal: a PTY and `alacritty_terminal`'s emulator, rows of coloured text, key encoding |
 | `src/ipc.rs` | Single instance and `org.freedesktop.FileManager1` over D-Bus |
 | `src/theme.rs` | Omarchy's theme colours, watched for changes |
+| `demo/` | The README demo: fixtures, the scripted session (`storyboard.py`) and `record.sh` |
 | `src/open.rs` | Opening files in their default app, terminal apps in a terminal |
 | `src/archive.rs` | Archive listing (`bsdtar -tv`) into a folder tree, and member extraction |
 | `src/ops.rs` | Copy, move, delete, rename and mkdir as job steps: scripts on one machine, `scp` between machines |

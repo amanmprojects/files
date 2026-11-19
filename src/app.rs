@@ -962,6 +962,10 @@ impl App {
     /// Ctrl+V: files another app copied paste in (uploaded on a server); otherwise what was
     /// copied here.
     pub fn paste_clipboard(&mut self, tx: &mut Tx) {
+        // Headless runs have no system clipboard to read: paste what was copied here.
+        if rune::tooling::headless_run().is_some() {
+            return self.paste();
+        }
         tx.read_clipboard(|s: &mut App, content: &rune::ClipboardContent, _tx: &mut Tx| {
             let files: Vec<PathBuf> = content.files().to_vec();
             let ours: Vec<PathBuf> = match &s.clip {

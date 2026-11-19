@@ -2,9 +2,25 @@
 
 # files
 
-A native Linux file explorer built with [Rune](https://github.com/anomalyco/rune), Anomaly's GPU-rendered Rust UI framework. It browses local folders, archives and SSH servers in tabs, copies between them with `scp`, previews files, has a built-in terminal, and stands in for Nautilus as the desktop's file manager (made for Omarchy, works on any Linux desktop).
+[![Built with Rune](https://img.shields.io/badge/built%20with-Rune-6f42c1?style=for-the-badge)](https://github.com/anomalyco/rune)
+
+**A native Linux file explorer built with [Rune](https://github.com/anomalyco/rune)**, Anomaly's GPU-rendered Rust UI framework. Every pixel, from the file list to the terminal, is drawn by Rune: no GTK, no Qt, no web view.
+
+It browses local folders, archives and SSH servers in tabs, copies between them with `scp`, previews files, has a built-in terminal, and stands in for Nautilus as the desktop's file manager (made for Omarchy, works on any Linux desktop).
 
 ![Two tabs, a photo previewed in the side pane, and the terminal panel](assets/screenshots/files.png)
+
+## Built with Rune
+
+[Rune](https://github.com/anomalyco/rune) is a native UI framework for Rust from [Anomaly](https://github.com/anomalyco) (the team behind OpenCode): its own renderer on the GPU (wgpu), text shaping, Taffy layout and spring animation, with views written as plain functions of state. This app is a Rune app from top to bottom:
+
+- **Views**: the whole window is one `fn view(&App, &mut Cx) -> El`, rebuilt from state; Rune diffs it and animates what changed on springs.
+- **rune-kit components**: the sidebar and panes (`SplitView`, `Sidebar`), the virtualised file list (`Table`), the tab bar (`TabStrip`), menus, dialogs, text fields, segmented controls, rendered Markdown and syntax highlighting in previews.
+- **Rendering**: images and thumbnails through Rune's image cache, the terminal as rows of rich text in the system's monospace font, the UI zoom (Ctrl+= / Ctrl+-) as Rune's page zoom, the Omarchy theme through rune-kit's palette.
+- **Platform**: Wayland and X11 windows, keyboard focus and key routing, trackpad gestures (the back/forward swipe), the clipboard (files included), and the app id Hyprland sees.
+- **Testing**: Rune runs any app headless with a virtual clock, so every feature here was checked by scripted runs that click, type and scroll, then render PNGs or dump the element tree (`--script`, `--snap`, `--tree`).
+
+Rune is pre-release; this app pins a `dev` revision in `Cargo.toml`.
 
 ## Features
 

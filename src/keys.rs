@@ -69,6 +69,7 @@ pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+H, Alt+.", "Show hidden files"),
             ("Ctrl+1 / 2 / 3 / 4", "Sort by name / modified / size / kind (again flips)"),
             ("Ctrl+B, F9", "Sidebar"),
+            ("Ctrl+Alt+B", "Right sidebar (preview or transfers)"),
             ("Alt+P", "Preview pane"),
             ("Ctrl+J", "Transfers"),
         ],
@@ -253,6 +254,7 @@ pub fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
             }
         }
         _ if cmd_alt('n') => s.start_new_file(),
+        _ if cmd_alt('b') => s.activity.toggle(),
         _ if cmd_alt('t') => s.open_terminal(),
         _ if m.alt && !m.cmd && ev.key == Key::Text("d".into()) => crate::view::start_path_edit(s),
         _ => return false,

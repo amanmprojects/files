@@ -133,7 +133,7 @@ pub fn build(s: &App, k: &Kit, room: Option<f32>, bar: Option<f32>) -> Toolbar {
             IconButton::new(&rune_kit::shell::INSPECTOR)
                 .variant(IconButtonVariant::GhostMuted)
                 .label("Preview pane")
-                .help("Preview pane (Alt+P)")
+                .help("Preview pane (Alt+P; Ctrl+Alt+B toggles the right sidebar)")
                 .expanded(showing)
                 .on_press(|s: &mut App| s.toggle_side(crate::app::Side::Preview))
                 .build(k)

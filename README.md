@@ -142,6 +142,7 @@ F1 (or Ctrl+/) shows all of these in the app.
 | Ctrl+H, Alt+. | Show hidden files |
 | Ctrl+1 / 2 / 3 / 4 | Sort by name / modified / size / kind (again flips) |
 | Ctrl+B, F9 | Sidebar |
+| Ctrl+Alt+B | Right sidebar (preview or transfers) |
 | Alt+P | Preview pane |
 | Ctrl+J | Transfers |
 

@@ -30,8 +30,8 @@ Rune is pre-release; this app pins a `dev` revision in `Cargo.toml`.
 
 ## Features
 
-- **Tabs**: Ctrl+N opens a tab, Ctrl+Enter opens the selected folders in tabs, Ctrl+W closes one, Ctrl+Shift+T reopens it, and Ctrl+Tab, Ctrl+Page Up/Down and Alt+1…9 move between them. Tabs reorder by drag and close with a middle click.
-- **Terminal panel**: Ctrl+T opens a terminal under the files, VS Code style, in the folder shown (on a server, an `ssh` session in that folder over the shared connection). Ctrl+T from the terminal hides it; the header's buttons `cd` it to the current folder or start a fresh shell; its top edge drags to resize. It's Alacritty's terminal emulator (`alacritty_terminal`) drawn by Rune: 256 and true colours, the alternate screen (vim, less, htop), scrollback (Shift+Page Up/Down, the wheel), bracketed paste (Ctrl+Shift+V).
+- **Tabs**: Ctrl+T (or Ctrl+N) opens a tab, Ctrl+Enter opens the selected folders in tabs, Ctrl+W closes one, Ctrl+Shift+T reopens it, and Ctrl+Tab, Ctrl+Page Up/Down and Alt+1…9 move between them. Tabs reorder by drag and close with a middle click.
+- **Terminal panel**: Ctrl+J opens a terminal under the files, VS Code style, in the folder shown (on a server, an `ssh` session in that folder over the shared connection). Ctrl+J from the terminal hides it; the header's buttons `cd` it to the current folder or start a fresh shell; its top edge drags to resize. It's Alacritty's terminal emulator (`alacritty_terminal`) drawn by Rune: 256 and true colours, the alternate screen (vim, less, htop), scrollback (Shift+Page Up/Down, the wheel), bracketed paste (Ctrl+Shift+V).
 - **Path bar**: Ctrl+L (or a click beside the breadcrumbs, or typing `/` or `~`) to type a location, with completion as you type: folders on this machine or on the server shown, and server names. ↑ ↓ pick, Tab completes, Enter goes.
 - **The desktop's file manager**: `install.sh` makes it the default for folders (`xdg-open`, "Open folder" everywhere) and the `org.freedesktop.FileManager1` D-Bus service ("Show in folder" in browsers, editors and download lists). It runs as one instance: another launch, an `xdg-open` or a D-Bus call opens a tab in the running window. Copying local files puts them on the clipboard as files (other apps paste them), and pasting files another app copied copies or uploads them here. The window's title names the folder shown.
 - **Omarchy**: colours follow Omarchy's current theme (and change with it), monospace text uses the system's monospace font (Omarchy's Nerd Font), and files whose default app runs in a terminal (nvim, helix) open in one through `xdg-terminal-exec`.
@@ -156,13 +156,13 @@ F1 (or Ctrl+/) shows all of these in the app.
 | Ctrl+B, F9 | Sidebar |
 | Ctrl+Alt+B | Right sidebar (preview or transfers) |
 | Alt+P | Preview pane |
-| Ctrl+J | Transfers |
+| Ctrl+Shift+J | Transfers |
 
 **Tabs**
 
 | Key | Action |
 | --- | --- |
-| Ctrl+N | New tab here |
+| Ctrl+T, Ctrl+N | New tab here |
 | Ctrl+Enter | Open the selected folders in new tabs |
 | Ctrl+W | Close the tab (the last one closes the window) |
 | Ctrl+Shift+T | Reopen the last closed tab |
@@ -175,7 +175,7 @@ F1 (or Ctrl+/) shows all of these in the app.
 
 | Key | Action |
 | --- | --- |
-| Ctrl+T | Terminal panel: open and focus; from it, hide |
+| Ctrl+J | Terminal panel: open and focus; from it, hide |
 | Ctrl+Shift+V (in the terminal) | Paste |
 | Shift+Page Up / Down (in the terminal) | Scroll back |
 | F4, Ctrl+Alt+T | Terminal window here |

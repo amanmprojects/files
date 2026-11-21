@@ -75,13 +75,13 @@ pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+B, F9", "Sidebar"),
             ("Ctrl+Alt+B", "Right sidebar (preview or transfers)"),
             ("Alt+P", "Preview pane"),
-            ("Ctrl+J", "Transfers"),
+            ("Ctrl+Shift+J", "Transfers"),
         ],
     ),
     (
         "Tabs",
         &[
-            ("Ctrl+N", "New tab here"),
+            ("Ctrl+T, Ctrl+N", "New tab here"),
             ("Ctrl+Enter", "Open the selected folders in new tabs"),
             ("Ctrl+W", "Close the tab (the last one closes the window)"),
             ("Ctrl+Shift+T", "Reopen the last closed tab"),
@@ -94,7 +94,7 @@ pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
     (
         "Window",
         &[
-            ("Ctrl+T", "Terminal panel: open and focus; from it, hide"),
+            ("Ctrl+J", "Terminal panel: open and focus; from it, hide"),
             ("Ctrl+Shift+V (in the terminal)", "Paste"),
             ("Shift+Page Up / Down (in the terminal)", "Scroll back"),
             ("F4, Ctrl+Alt+T", "Terminal window here"),
@@ -234,9 +234,10 @@ pub fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
         _ if cmd('k') => s.open_connect_dialog("", None),
         _ if cmd('n') => s.new_tab(None),
         _ if cmd('b') => s.sidebar.toggle(),
-        _ if cmd('t') => s.toggle_terminal(tx),
+        _ if cmd('t') => s.new_tab(None),
+        _ if cmd('j') => s.toggle_terminal(tx),
         _ if cmd_shift('t') => s.reopen_tab(),
-        _ if cmd('j') => s.toggle_side(crate::app::Side::Transfers),
+        _ if cmd_shift('j') => s.toggle_side(crate::app::Side::Transfers),
         _ if cmd('u') => {
             if s.loc.is_remote() {
                 crate::view::pick_upload(s, tx);

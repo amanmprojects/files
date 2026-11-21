@@ -1706,7 +1706,7 @@ impl App {
 
     // ---- Terminal panel ------------------------------------------------------------------------
 
-    /// Ctrl+T: opens the panel and focuses the terminal; from the terminal, hides the panel.
+    /// Ctrl+J: opens the panel and focuses the terminal; from the terminal, hides the panel.
     pub fn toggle_terminal(&mut self, tx: &mut Tx) {
         let in_term = tx.focused() == Some("terminal");
         if self.term_open && in_term {
@@ -1785,10 +1785,11 @@ impl App {
             Key::Command(c) => Some(c.to_ascii_lowercase()),
             _ => None,
         };
-        // Left to the app: the panel toggle, Ctrl+Shift chords, zoom, tab switching, and
+        // Left to the app: the panel toggle (Ctrl+J), a new tab (Ctrl+T), Ctrl+Shift chords,
+        // zoom, tab switching, and
         // Ctrl+Alt+B (the right sidebar), which arrives as text with Ctrl and Alt held.
         let ctrl_alt_b = m.cmd && m.alt && (ch == Some('b') || matches!(&ev.key, Key::Text(t) if t.eq_ignore_ascii_case("b")));
-        if (m.cmd && !m.shift && ch == Some('t')) || (m.cmd && m.shift && ch != Some('v')) || ctrl_alt_b {
+        if (m.cmd && !m.shift && matches!(ch, Some('t' | 'j'))) || (m.cmd && m.shift && ch != Some('v')) || ctrl_alt_b {
             return false;
         }
         if m.cmd && matches!(ch, Some('=' | '+' | '-' | '0')) {

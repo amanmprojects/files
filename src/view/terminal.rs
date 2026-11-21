@@ -1,4 +1,4 @@
-//! The bottom terminal panel (Ctrl+T), VS Code style: a header with the shell's title and
+//! The bottom terminal panel (Ctrl+J), VS Code style: a header with the shell's title and
 //! actions, a draggable top edge, and the terminal's screen.
 
 use rune::{Cursor, El, PointerPress, Tx, col, row, text};
@@ -32,7 +32,7 @@ pub fn panel(s: &App, k: &Kit, theme: &Theme) -> El {
             s.start_terminal();
             tx.focus("terminal", false);
         }))
-        .child(button(&glyphs::CLOSE, "Hide (Ctrl+T)", "term-close", |s, tx| {
+        .child(button(&glyphs::CLOSE, "Hide (Ctrl+J)", "term-close", |s, tx| {
             s.term_open = false;
             tx.focus("files", false);
         }));

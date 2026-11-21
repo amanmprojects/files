@@ -413,7 +413,7 @@ pub fn background_menu(s: &App, menu: Menu) -> Menu {
         .item(MenuItem::new("Reload").shortcut("F5").on_select(close_then(|s: &mut App| s.refresh())))
         .item(MenuItem::new("Copy Path").shortcut("Ctrl+Shift+C").on_select_tx(close_then_tx(|s: &mut App, tx: &mut Tx| s.copy_path(tx))))
         .item(MenuItem::new("Open Terminal Here").icon(&icons::TERMINAL).shortcut("F4").on_select(close_then(|s: &mut App| s.open_terminal())))
-        .item(MenuItem::new("New Tab").shortcut("Ctrl+N").on_select(close_then(|s: &mut App| s.new_tab(None))))
+        .item(MenuItem::new("New Tab").shortcut("Ctrl+T").on_select(close_then(|s: &mut App| s.new_tab(None))))
         .item(MenuItem::new("New Window").on_select(close_then(|s: &mut App| s.new_window())))
         .item(MenuItem::new("Clear Download Cache").on_select(close_then(|s: &mut App| s.clear_cache())))
         .separator()

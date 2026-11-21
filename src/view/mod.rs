@@ -119,7 +119,7 @@ fn tab_strip(s: &App, k: &Kit, width: Option<f32>) -> El {
     let plus = IconButton::new(&crate::icons::PLUS)
         .variant(IconButtonVariant::GhostMuted)
         .label("New tab")
-        .help("New tab (Ctrl+N)")
+        .help("New tab (Ctrl+T)")
         .on_press(|s: &mut App| s.new_tab(None))
         .build(k)
         .key("new-tab");
